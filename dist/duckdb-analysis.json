@@ -1,0 +1,1083 @@
+{
+  "generated_at": "2026-02-12T07:22:33.800076",
+  "step1_profiling": {
+    "table_counts": {
+      "dim_stores": 1158,
+      "dim_products": 10166,
+      "fact_sales": 801125,
+      "fact_purchases": 1065124,
+      "fact_inventory_snapshots": 109655
+    },
+    "date_ranges": {
+      "fact_sales": {
+        "min": "2023-11-01",
+        "max": "2026-02-08"
+      },
+      "fact_purchases": {
+        "min": "2024-01-02",
+        "max": "2026-02-07"
+      }
+    },
+    "sales_by_source": [
+      {
+        "source": "original",
+        "count": 712584,
+        "revenue": 1241164095.19
+      },
+      {
+        "source": "pt",
+        "count": 50173,
+        "revenue": 89442646.01
+      },
+      {
+        "source": "ssl",
+        "count": 38368,
+        "revenue": 73906183.19
+      }
+    ],
+    "data_quality": [
+      {
+        "check": "sales_missing_barcode",
+        "count": 0
+      },
+      {
+        "check": "sales_missing_site",
+        "count": 0
+      },
+      {
+        "check": "returns_count",
+        "count": 35532
+      }
+    ]
+  },
+  "step2_metrics": {
+    "total_revenue": 1475246314.43,
+    "total_units_sold": 774870,
+    "total_units_purchased": 10269848,
+    "sell_through_pct": 7.55,
+    "avg_discount_pct": 19.65,
+    "return_pct": 4.44,
+    "transaction_count": 765593,
+    "atv": 1926.93,
+    "upt": 1.01,
+    "full_price_sell_through_pct": 49.04,
+    "active_stores": 586,
+    "revenue_per_store": 2517485.18,
+    "inventory_units": 181649,
+    "days_of_inventory": 184.0,
+    "channel_mix": [
+      {
+        "source": "original",
+        "pct": 88.3,
+        "revenue": 1302932720.76
+      },
+      {
+        "source": "pt",
+        "pct": 6.4,
+        "revenue": 94159875.98
+      },
+      {
+        "source": "ssl",
+        "pct": 5.3,
+        "revenue": 78153717.69
+      }
+    ],
+    "revenue_by_month": [
+      {
+        "month": "2023-11",
+        "revenue": 818325.71,
+        "units_sold": 296,
+        "units_purchased": 0,
+        "sell_through_pct": null,
+        "avg_discount_pct": 5.5,
+        "return_pct": 3.61,
+        "transaction_count": 294,
+        "full_price_pct": 51.4,
+        "atv": 2783.0,
+        "upt": 1.01
+      },
+      {
+        "month": "2023-12",
+        "revenue": 9497258.7,
+        "units_sold": 4517,
+        "units_purchased": 0,
+        "sell_through_pct": null,
+        "avg_discount_pct": 5.8,
+        "return_pct": 2.71,
+        "transaction_count": 4458,
+        "full_price_pct": 78.7,
+        "atv": 2130.0,
+        "upt": 1.01
+      },
+      {
+        "month": "2024-01",
+        "revenue": 17894685.76,
+        "units_sold": 8176,
+        "units_purchased": 391476,
+        "sell_through_pct": 2.1,
+        "avg_discount_pct": 1.2,
+        "return_pct": 3.2,
+        "transaction_count": 8079,
+        "full_price_pct": 95.7,
+        "atv": 2215.0,
+        "upt": 1.01
+      },
+      {
+        "month": "2024-02",
+        "revenue": 41172806.9,
+        "units_sold": 18495,
+        "units_purchased": 181445,
+        "sell_through_pct": 10.2,
+        "avg_discount_pct": 2.5,
+        "return_pct": 3.79,
+        "transaction_count": 18320,
+        "full_price_pct": 83.7,
+        "atv": 2247.0,
+        "upt": 1.01
+      },
+      {
+        "month": "2024-03",
+        "revenue": 66473291.44,
+        "units_sold": 29808,
+        "units_purchased": 161162,
+        "sell_through_pct": 18.5,
+        "avg_discount_pct": 2.5,
+        "return_pct": 3.71,
+        "transaction_count": 29503,
+        "full_price_pct": 75.7,
+        "atv": 2253.0,
+        "upt": 1.01
+      },
+      {
+        "month": "2024-04",
+        "revenue": 62099299.42,
+        "units_sold": 29452,
+        "units_purchased": 284736,
+        "sell_through_pct": 10.3,
+        "avg_discount_pct": 3.0,
+        "return_pct": 4.26,
+        "transaction_count": 29174,
+        "full_price_pct": 85.5,
+        "atv": 2129.0,
+        "upt": 1.01
+      },
+      {
+        "month": "2024-05",
+        "revenue": 63378110.47,
+        "units_sold": 32640,
+        "units_purchased": 469511,
+        "sell_through_pct": 7.0,
+        "avg_discount_pct": 6.5,
+        "return_pct": 4.36,
+        "transaction_count": 32346,
+        "full_price_pct": 77.3,
+        "atv": 1959.0,
+        "upt": 1.01
+      },
+      {
+        "month": "2024-06",
+        "revenue": 62581782.75,
+        "units_sold": 38148,
+        "units_purchased": 239876,
+        "sell_through_pct": 15.9,
+        "avg_discount_pct": 21.0,
+        "return_pct": 4.63,
+        "transaction_count": 37702,
+        "full_price_pct": 40.0,
+        "atv": 1660.0,
+        "upt": 1.01
+      },
+      {
+        "month": "2024-07",
+        "revenue": 62923678.24,
+        "units_sold": 43034,
+        "units_purchased": 513231,
+        "sell_through_pct": 8.4,
+        "avg_discount_pct": 30.8,
+        "return_pct": 4.57,
+        "transaction_count": 42574,
+        "full_price_pct": 38.0,
+        "atv": 1478.0,
+        "upt": 1.01
+      },
+      {
+        "month": "2024-08",
+        "revenue": 76779732.49,
+        "units_sold": 41678,
+        "units_purchased": 307807,
+        "sell_through_pct": 13.5,
+        "avg_discount_pct": 14.6,
+        "return_pct": 4.48,
+        "transaction_count": 41146,
+        "full_price_pct": 70.7,
+        "atv": 1866.0,
+        "upt": 1.01
+      },
+      {
+        "month": "2024-09",
+        "revenue": 75454319.14,
+        "units_sold": 34233,
+        "units_purchased": 778215,
+        "sell_through_pct": 4.4,
+        "avg_discount_pct": 3.4,
+        "return_pct": 4.36,
+        "transaction_count": 33487,
+        "full_price_pct": 83.0,
+        "atv": 2253.0,
+        "upt": 1.02
+      },
+      {
+        "month": "2024-10",
+        "revenue": 74753752.82,
+        "units_sold": 34937,
+        "units_purchased": 246426,
+        "sell_through_pct": 14.2,
+        "avg_discount_pct": 4.9,
+        "return_pct": 4.52,
+        "transaction_count": 34415,
+        "full_price_pct": 70.2,
+        "atv": 2172.0,
+        "upt": 1.02
+      },
+      {
+        "month": "2024-11",
+        "revenue": 64419154.76,
+        "units_sold": 27869,
+        "units_purchased": 723504,
+        "sell_through_pct": 3.9,
+        "avg_discount_pct": 5.6,
+        "return_pct": 4.24,
+        "transaction_count": 27559,
+        "full_price_pct": 80.4,
+        "atv": 2337.0,
+        "upt": 1.01
+      },
+      {
+        "month": "2024-12",
+        "revenue": 98042120.61,
+        "units_sold": 52648,
+        "units_purchased": 364247,
+        "sell_through_pct": 14.5,
+        "avg_discount_pct": 28.9,
+        "return_pct": 3.7,
+        "transaction_count": 51978,
+        "full_price_pct": 25.2,
+        "atv": 1886.0,
+        "upt": 1.01
+      },
+      {
+        "month": "2025-01",
+        "revenue": 67538927.28,
+        "units_sold": 42960,
+        "units_purchased": 1652292,
+        "sell_through_pct": 2.6,
+        "avg_discount_pct": 38.0,
+        "return_pct": 4.41,
+        "transaction_count": 42314,
+        "full_price_pct": 18.6,
+        "atv": 1596.0,
+        "upt": 1.02
+      },
+      {
+        "month": "2025-02",
+        "revenue": 46749538.97,
+        "units_sold": 25111,
+        "units_purchased": 296054,
+        "sell_through_pct": 8.5,
+        "avg_discount_pct": 21.2,
+        "return_pct": 5.03,
+        "transaction_count": 24710,
+        "full_price_pct": 55.5,
+        "atv": 1892.0,
+        "upt": 1.02
+      },
+      {
+        "month": "2025-03",
+        "revenue": 60227302.46,
+        "units_sold": 28250,
+        "units_purchased": 514943,
+        "sell_through_pct": 5.5,
+        "avg_discount_pct": 8.8,
+        "return_pct": 4.78,
+        "transaction_count": 27850,
+        "full_price_pct": 68.4,
+        "atv": 2163.0,
+        "upt": 1.01
+      },
+      {
+        "month": "2025-04",
+        "revenue": 71073774.63,
+        "units_sold": 31577,
+        "units_purchased": 292055,
+        "sell_through_pct": 10.8,
+        "avg_discount_pct": 4.0,
+        "return_pct": 4.7,
+        "transaction_count": 31241,
+        "full_price_pct": 86.5,
+        "atv": 2275.0,
+        "upt": 1.01
+      },
+      {
+        "month": "2025-05",
+        "revenue": 77933942.66,
+        "units_sold": 36574,
+        "units_purchased": 215368,
+        "sell_through_pct": 17.0,
+        "avg_discount_pct": 10.5,
+        "return_pct": 4.24,
+        "transaction_count": 36302,
+        "full_price_pct": 67.1,
+        "atv": 2147.0,
+        "upt": 1.01
+      },
+      {
+        "month": "2025-06",
+        "revenue": 75129929.94,
+        "units_sold": 43103,
+        "units_purchased": 332189,
+        "sell_through_pct": 13.0,
+        "avg_discount_pct": 27.0,
+        "return_pct": 4.14,
+        "transaction_count": 42513,
+        "full_price_pct": 28.3,
+        "atv": 1767.0,
+        "upt": 1.01
+      },
+      {
+        "month": "2025-07",
+        "revenue": 60320627.33,
+        "units_sold": 41394,
+        "units_purchased": 410192,
+        "sell_through_pct": 10.1,
+        "avg_discount_pct": 39.3,
+        "return_pct": 4.69,
+        "transaction_count": 40993,
+        "full_price_pct": 13.7,
+        "atv": 1471.0,
+        "upt": 1.01
+      },
+      {
+        "month": "2025-08",
+        "revenue": 30731696.92,
+        "units_sold": 20318,
+        "units_purchased": 300569,
+        "sell_through_pct": 6.8,
+        "avg_discount_pct": 36.4,
+        "return_pct": 5.7,
+        "transaction_count": 20092,
+        "full_price_pct": 26.9,
+        "atv": 1530.0,
+        "upt": 1.01
+      },
+      {
+        "month": "2025-09",
+        "revenue": 11811788.28,
+        "units_sold": 7022,
+        "units_purchased": 433760,
+        "sell_through_pct": 1.6,
+        "avg_discount_pct": 26.4,
+        "return_pct": 6.45,
+        "transaction_count": 6965,
+        "full_price_pct": 36.8,
+        "atv": 1696.0,
+        "upt": 1.01
+      },
+      {
+        "month": "2025-10",
+        "revenue": 8104666.62,
+        "units_sold": 5340,
+        "units_purchased": 314303,
+        "sell_through_pct": 1.7,
+        "avg_discount_pct": 34.4,
+        "return_pct": 3.28,
+        "transaction_count": 5276,
+        "full_price_pct": 6.2,
+        "atv": 1536.0,
+        "upt": 1.01
+      },
+      {
+        "month": "2025-11",
+        "revenue": 5416527.4,
+        "units_sold": 3536,
+        "units_purchased": 204746,
+        "sell_through_pct": 1.7,
+        "avg_discount_pct": 37.0,
+        "return_pct": 2.52,
+        "transaction_count": 3599,
+        "full_price_pct": 4.7,
+        "atv": 1505.0,
+        "upt": 0.98
+      },
+      {
+        "month": "2025-12",
+        "revenue": 103182568.23,
+        "units_sold": 47367,
+        "units_purchased": 276964,
+        "sell_through_pct": 17.1,
+        "avg_discount_pct": 28.4,
+        "return_pct": 4.15,
+        "transaction_count": 46935,
+        "full_price_pct": 8.1,
+        "atv": 2198.0,
+        "upt": 1.01
+      },
+      {
+        "month": "2026-01",
+        "revenue": 69199124.0,
+        "units_sold": 39722,
+        "units_purchased": 221126,
+        "sell_through_pct": 18.0,
+        "avg_discount_pct": 38.8,
+        "return_pct": 5.31,
+        "transaction_count": 39143,
+        "full_price_pct": 13.4,
+        "atv": 1768.0,
+        "upt": 1.01
+      },
+      {
+        "month": "2026-02",
+        "revenue": 11537580.5,
+        "units_sold": 6665,
+        "units_purchased": 143651,
+        "sell_through_pct": 4.6,
+        "avg_discount_pct": 34.1,
+        "return_pct": 6.62,
+        "transaction_count": 6625,
+        "full_price_pct": 24.8,
+        "atv": 1742.0,
+        "upt": 1.01
+      }
+    ]
+  },
+  "step3_exploratory": {
+    "top_stores": [
+      {
+        "site_code": "128",
+        "revenue": 26288203.66,
+        "units": 12677
+      },
+      {
+        "site_code": "P033",
+        "revenue": 24323473.19,
+        "units": 11963
+      },
+      {
+        "site_code": "P139",
+        "revenue": 15484233.62,
+        "units": 6973
+      },
+      {
+        "site_code": "115",
+        "revenue": 15292706.1,
+        "units": 7114
+      },
+      {
+        "site_code": "273",
+        "revenue": 15026743.49,
+        "units": 8098
+      },
+      {
+        "site_code": "114",
+        "revenue": 14730108.01,
+        "units": 7953
+      },
+      {
+        "site_code": "P070",
+        "revenue": 14380278.04,
+        "units": 7407
+      },
+      {
+        "site_code": "188",
+        "revenue": 14370327.67,
+        "units": 6798
+      },
+      {
+        "site_code": "P027",
+        "revenue": 13936141.04,
+        "units": 6977
+      },
+      {
+        "site_code": "P434",
+        "revenue": 13248003.15,
+        "units": 6035
+      },
+      {
+        "site_code": "P492",
+        "revenue": 13192666.17,
+        "units": 6651
+      },
+      {
+        "site_code": "P458",
+        "revenue": 13174311.24,
+        "units": 6381
+      },
+      {
+        "site_code": "153",
+        "revenue": 12800219.0,
+        "units": 6811
+      },
+      {
+        "site_code": "P017",
+        "revenue": 12554263.16,
+        "units": 5695
+      },
+      {
+        "site_code": "120",
+        "revenue": 12244713.77,
+        "units": 5673
+      }
+    ],
+    "revenue_by_channel": [
+      {
+        "source": "original",
+        "revenue": 1302932720.76,
+        "units": 690046
+      },
+      {
+        "source": "pt",
+        "revenue": 94159875.98,
+        "units": 48156
+      },
+      {
+        "source": "ssl",
+        "revenue": 78153717.69,
+        "units": 36668
+      }
+    ],
+    "top_products": [
+      {
+        "barcode": "8907569364807",
+        "revenue": 5733227.16,
+        "units": 2491
+      },
+      {
+        "barcode": "8907569364791",
+        "revenue": 5522507.83,
+        "units": 2401
+      },
+      {
+        "barcode": "8907569364814",
+        "revenue": 4685490.34,
+        "units": 2035
+      },
+      {
+        "barcode": "8907569364784",
+        "revenue": 4302737.54,
+        "units": 1859
+      },
+      {
+        "barcode": "8907569320827",
+        "revenue": 3223278.82,
+        "units": 1113
+      },
+      {
+        "barcode": "8907569320810",
+        "revenue": 3129686.31,
+        "units": 1085
+      },
+      {
+        "barcode": "8907569323767",
+        "revenue": 2707653.19,
+        "units": 1853
+      },
+      {
+        "barcode": "8907569323750",
+        "revenue": 2703985.53,
+        "units": 1849
+      },
+      {
+        "barcode": "8907569298867",
+        "revenue": 2587496.64,
+        "units": 834
+      },
+      {
+        "barcode": "8907569298874",
+        "revenue": 2493884.26,
+        "units": 808
+      },
+      {
+        "barcode": "8907569297815",
+        "revenue": 2455225.34,
+        "units": 945
+      },
+      {
+        "barcode": "8907569297822",
+        "revenue": 2425036.78,
+        "units": 932
+      },
+      {
+        "barcode": "8907569319821",
+        "revenue": 2270565.25,
+        "units": 1011
+      },
+      {
+        "barcode": "8907569318558",
+        "revenue": 2269897.11,
+        "units": 747
+      },
+      {
+        "barcode": "8907569319814",
+        "revenue": 2261695.95,
+        "units": 1014
+      },
+      {
+        "barcode": "8907569318541",
+        "revenue": 2249484.53,
+        "units": 731
+      },
+      {
+        "barcode": "8907569307637",
+        "revenue": 2223046.95,
+        "units": 1788
+      },
+      {
+        "barcode": "8907569307644",
+        "revenue": 2198330.0,
+        "units": 1772
+      },
+      {
+        "barcode": "8907569294654",
+        "revenue": 2152280.41,
+        "units": 879
+      },
+      {
+        "barcode": "8907569320834",
+        "revenue": 2106985.37,
+        "units": 700
+      }
+    ],
+    "purchases_by_season": [
+      {
+        "season": "-",
+        "units": 3318567,
+        "records": 564
+      },
+      {
+        "season": "AW-25",
+        "units": 2031822,
+        "records": 284193
+      },
+      {
+        "season": "SS-25",
+        "units": 1835840,
+        "records": 254848
+      },
+      {
+        "season": "AW-24",
+        "units": 1647908,
+        "records": 250406
+      },
+      {
+        "season": "SS-24",
+        "units": 828585,
+        "records": 231040
+      },
+      {
+        "season": "SS-26",
+        "units": 486909,
+        "records": 10899
+      },
+      {
+        "season": "AW-23",
+        "units": 46500,
+        "records": 10143
+      },
+      {
+        "season": "SS-23",
+        "units": 39467,
+        "records": 10645
+      },
+      {
+        "season": "AW-22",
+        "units": 11339,
+        "records": 3255
+      },
+      {
+        "season": "SS-22",
+        "units": 6985,
+        "records": 1458
+      }
+    ]
+  },
+  "step4_segmentation": {
+    "abc_counts": {
+      "C": 2453,
+      "A": 1623,
+      "B": 1423
+    },
+    "xyz_counts": {
+      "Y": 2803,
+      "Z": 1843,
+      "X": 853
+    },
+    "abc_xyz_matrix": {
+      "A": {
+        "X": 4,
+        "Y": 525,
+        "Z": 1094
+      },
+      "B": {
+        "X": 55,
+        "Y": 901,
+        "Z": 467
+      },
+      "C": {
+        "X": 794,
+        "Y": 1377,
+        "Z": 282
+      }
+    },
+    "sample_segments": [
+      {
+        "barcode": "8907569298997",
+        "revenue": 819346.86,
+        "units": 574,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569305756",
+        "revenue": 186389.51,
+        "units": 186,
+        "abc": "B",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569357670",
+        "revenue": 197944.08,
+        "units": 96,
+        "abc": "B",
+        "xyz": "Y"
+      },
+      {
+        "barcode": "8907569340689",
+        "revenue": 777963.61,
+        "units": 341,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569340610",
+        "revenue": 838373.22,
+        "units": 380,
+        "abc": "A",
+        "xyz": "Y"
+      },
+      {
+        "barcode": "8907569340634",
+        "revenue": 1261715.09,
+        "units": 576,
+        "abc": "A",
+        "xyz": "Y"
+      },
+      {
+        "barcode": "8907569294586",
+        "revenue": 959896.93,
+        "units": 429,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569340801",
+        "revenue": 518507.16,
+        "units": 268,
+        "abc": "A",
+        "xyz": "Y"
+      },
+      {
+        "barcode": "8907569351944",
+        "revenue": 706701.32,
+        "units": 355,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569367747",
+        "revenue": 503537.39,
+        "units": 175,
+        "abc": "A",
+        "xyz": "Y"
+      },
+      {
+        "barcode": "8907569361493",
+        "revenue": 49493.0,
+        "units": 30,
+        "abc": "C",
+        "xyz": "Y"
+      },
+      {
+        "barcode": "8907569297839",
+        "revenue": 1413758.22,
+        "units": 532,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569298867",
+        "revenue": 2587496.64,
+        "units": 834,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569300973",
+        "revenue": 845819.86,
+        "units": 314,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569343475",
+        "revenue": 316823.38,
+        "units": 149,
+        "abc": "A",
+        "xyz": "Y"
+      },
+      {
+        "barcode": "8907569350954",
+        "revenue": 1524596.16,
+        "units": 613,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569350961",
+        "revenue": 1045470.79,
+        "units": 395,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569351623",
+        "revenue": 576444.78,
+        "units": 226,
+        "abc": "A",
+        "xyz": "Y"
+      },
+      {
+        "barcode": "8907569358998",
+        "revenue": 653778.93,
+        "units": 219,
+        "abc": "A",
+        "xyz": "Y"
+      },
+      {
+        "barcode": "8907569359520",
+        "revenue": 562911.57,
+        "units": 266,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569370594",
+        "revenue": 973849.5,
+        "units": 370,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569295408",
+        "revenue": 568291.94,
+        "units": 313,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569295453",
+        "revenue": 507817.94,
+        "units": 301,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569298386",
+        "revenue": 1236556.51,
+        "units": 550,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569302205",
+        "revenue": 1635389.53,
+        "units": 814,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569358035",
+        "revenue": 217833.21,
+        "units": 104,
+        "abc": "B",
+        "xyz": "Y"
+      },
+      {
+        "barcode": "8907569358110",
+        "revenue": 379070.0,
+        "units": 178,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569358127",
+        "revenue": 354375.28,
+        "units": 172,
+        "abc": "A",
+        "xyz": "Y"
+      },
+      {
+        "barcode": "8907569358219",
+        "revenue": 243384.5,
+        "units": 96,
+        "abc": "B",
+        "xyz": "Y"
+      },
+      {
+        "barcode": "8907569295811",
+        "revenue": 603981.88,
+        "units": 360,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569297143",
+        "revenue": 1445388.94,
+        "units": 881,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569298584",
+        "revenue": 1206360.37,
+        "units": 827,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569360441",
+        "revenue": 720936.89,
+        "units": 426,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569360724",
+        "revenue": 180013.85,
+        "units": 132,
+        "abc": "B",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569360847",
+        "revenue": 420396.68,
+        "units": 255,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569294135",
+        "revenue": 730978.5,
+        "units": 714,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569294081",
+        "revenue": 478634.06,
+        "units": 390,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569299055",
+        "revenue": 580237.02,
+        "units": 510,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569359995",
+        "revenue": 615476.3,
+        "units": 350,
+        "abc": "A",
+        "xyz": "Y"
+      },
+      {
+        "barcode": "8907569295880",
+        "revenue": 1226245.72,
+        "units": 836,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569295903",
+        "revenue": 712722.56,
+        "units": 475,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569343673",
+        "revenue": 354753.56,
+        "units": 234,
+        "abc": "A",
+        "xyz": "Y"
+      },
+      {
+        "barcode": "8907569343680",
+        "revenue": 432660.67,
+        "units": 298,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569352194",
+        "revenue": 492423.42,
+        "units": 298,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569360755",
+        "revenue": 1056330.6,
+        "units": 671,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569369154",
+        "revenue": 299121.99,
+        "units": 229,
+        "abc": "A",
+        "xyz": "Y"
+      },
+      {
+        "barcode": "8907569368461",
+        "revenue": 166703.97,
+        "units": 114,
+        "abc": "B",
+        "xyz": "Y"
+      },
+      {
+        "barcode": "8907569294821",
+        "revenue": 523657.39,
+        "units": 199,
+        "abc": "A",
+        "xyz": "Z"
+      },
+      {
+        "barcode": "8907569344816",
+        "revenue": 153498.31,
+        "units": 110,
+        "abc": "B",
+        "xyz": "Y"
+      },
+      {
+        "barcode": "8907569341112",
+        "revenue": 439672.49,
+        "units": 214,
+        "abc": "A",
+        "xyz": "Y"
+      }
+    ]
+  }
+}

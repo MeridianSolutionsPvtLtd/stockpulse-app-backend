@@ -1,0 +1,1609 @@
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import DashboardLayout from '../layouts/DashboardLayout';
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  ResponsiveContainer
+} from 'recharts';
+import {
+  Package, Truck, TrendingUp,
+  ChevronLeft, ChevronRight, BarChart2, Activity,
+  Layers, ArrowUpDown, ArrowDown, ArrowUp, Database, X, Box, ArrowRight,
+  Search, Store, Calendar, RotateCcw, Hash, Download, History
+} from 'lucide-react';
+import { FilterDropdown } from '../components/FilterDropdown';
+import { RetailValueSkeleton } from '../components/RetailLoader';
+import { ReplenishmentLineLoader } from '../components/ReplenishmentLineLoader';
+import InfoTooltip from '../components/InfoTooltip';
+import { PriorityScoreRawTooltip } from '../components/PriorityScoreRawTooltip';
+import { useFilters } from '../contexts/SeasonContext';
+import { API_URL } from '../../config';
+import { buildReplenishmentSisterQuery, REPLEN_SITE_TRANSFER_REFILL_SOURCE } from '../lib/replenFilterQuery';
+
+type RecomTableMode = 'wh_store' | 'site_transfer';
+
+function normSize(s: string | undefined | null) {
+  return String(s ?? '').trim().toUpperCase();
+}
+
+/** Client-side split: recommended refill first from store SOH, then WH SOH (until lakehouse exposes exact allocation). */
+function computeFillBreakdown(rec: { soh?: number; wh_soh?: number; refill?: number }) {
+  const need = Math.max(0, Number(rec.refill ?? 0));
+  const storeAvail = Math.max(0, Number(rec.soh ?? 0));
+  const whAvail = Math.max(0, Number(rec.wh_soh ?? 0));
+  if (need <= 0) {
+    return { need: 0, covered_store: 0, covered_wh: 0, unfilled: 0, refill_source: 'no action' as const };
+  }
+  const covered_store = Math.min(storeAvail, need);
+  const rem = Math.max(0, need - covered_store);
+  const covered_wh = Math.min(whAvail, rem);
+  const unfilled = Math.max(0, rem - covered_wh);
+  const refill_source = unfilled > 0 ? ('transfer required' as const) : ('covered' as const);
+  return { need, covered_store, covered_wh, unfilled, refill_source };
+}
+
+function buildTransferLookup(rows: any[]) {
+  const pickBetter = (prev: any, next: any) => {
+    const nu = Number(next?.total_units ?? next?.required_size_units ?? 0) || 0;
+    const pu = Number(prev?.total_units ?? prev?.required_size_units ?? 0) || 0;
+    return !prev || nu > pu ? next : prev;
+  };
+  const exact = new Map<string, any>();
+  const skuOnly = new Map<string, any>();
+
+  const recvVariants = (r: any): string[] => {
+    const out = new Set<string>();
+    for (const k of [
+      'receiver_store',
+      'receiver_site_id',
+      'receiver_site',
+      'receiver_site_name',
+      'receiver_store_name',
+    ]) {
+      const v = String(r[k] ?? '').trim();
+      if (v) out.add(v);
+    }
+    return [...out];
+  };
+
+  for (const r of rows || []) {
+    const sku = String(r.sku ?? '').trim();
+    const sz = normSize(r.size);
+    if (!sku) continue;
+    for (const rs of recvVariants(r)) {
+      const k3 = `${rs}|${sku}|${sz}`;
+      exact.set(k3, pickBetter(exact.get(k3), r));
+      const k2 = `${rs}|${sku}`;
+      skuOnly.set(k2, pickBetter(skuOnly.get(k2), r));
+    }
+  }
+  return { exact, skuOnly };
+}
+
+function findTransferForRec(lookup: ReturnType<typeof buildTransferLookup>, rec: any) {
+  const site = String(rec.site ?? '').trim();
+  const siteId = String(rec.site_id ?? '').trim();
+  const sku = String(rec.sku ?? '').trim();
+  const sz = normSize(rec.size);
+  const trySiteKeys = [...new Set([site, siteId].filter(Boolean))];
+  for (const s of trySiteKeys) {
+    const hit = lookup.exact.get(`${s}|${sku}|${sz}`) || lookup.skuOnly.get(`${s}|${sku}`);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** Pipeline `refill_source` for site→site queue (canonical string lives in `replenFilterQuery`). */
+export const SITE_TRANSFER_REFILL_SOURCE = REPLEN_SITE_TRANSFER_REFILL_SOURCE;
+
+/** Row-level sales: API `total_sales` (legacy `sales`). */
+function rowTotalSales(rec: { total_sales?: unknown; sales?: unknown } | null | undefined) {
+  const v = rec?.total_sales ?? rec?.sales;
+  if (v === null || v === undefined || v === '') return 0;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Strip chars that break TSV/Excel paste and multi-line layout (lake fields sometimes include \\t / \\n). */
+function sanitizeCellText(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  return String(value)
+    .replace(/\r\n|\r|\n/g, ' ')
+    .replace(/\t/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function formatReplLastSellingDate(v: unknown): string {
+  const s = sanitizeCellText(v);
+  return s || '—';
+}
+
+function formatReplDaysSinceLastSale(v: unknown): string {
+  if (v === null || v === undefined || v === '') return '—';
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toLocaleString() : '—';
+}
+
+/** Qty from WH SOH: sirf value green — baaki styling normal. */
+const WH_FILL_VALUE_CLASS = 'font-semibold tabular-nums text-emerald-600 dark:text-emerald-400';
+
+function formatPriorityScoreValue(ps: unknown): string {
+  if (ps === null || ps === undefined || ps === '') return '—';
+  const n = Number(ps);
+  if (!Number.isFinite(n)) return '—';
+  return n.toFixed(2);
+}
+
+/** Main table: `priority_score` from the recommendation row (same field as the lake / export). */
+function renderPriorityScoreCell(rec: { priority_score?: unknown }) {
+  return (
+    <span
+      className="font-mono font-semibold tabular-nums text-violet-600 dark:text-violet-400"
+      title="Scaled priority (0–10) — same as priority_score in the data"
+    >
+      {formatPriorityScoreValue(rec.priority_score)}
+    </span>
+  );
+}
+
+function renderPriorityScoreRawCell(rec: {
+  priority_score_raw?: unknown;
+  total_sold_qty?: unknown;
+  priority_expl_timing_bonus?: unknown;
+}) {
+  const raw = rec.priority_score_raw;
+  const has =
+    raw !== null &&
+    raw !== undefined &&
+    raw !== '' &&
+    Number.isFinite(Number(raw));
+  const text = has ? Number(raw).toFixed(4) : '—';
+  return (
+    <PriorityScoreRawTooltip
+      total_sold_qty={rec.total_sold_qty as number | null | undefined}
+      priority_expl_timing_bonus={rec.priority_expl_timing_bonus as number | null | undefined}
+      priority_score_raw={rec.priority_score_raw as number | null | undefined}
+    >
+      <span className="font-mono font-semibold tabular-nums">{text}</span>
+    </PriorityScoreRawTooltip>
+  );
+}
+
+// ─── Color constants ──────────────────────────────────────────────────────────
+const CHART_COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#3b82f6', '#ef4444', '#06b6d4'];
+const FILL_BUCKET_COLORS: Record<string, string> = {
+  '0-25%': '#ef4444',
+  '25-50%': '#f97316',
+  '50-75%': '#f59e0b',
+  '75-100%': '#84cc16',
+  '100%+': '#10b981',
+};
+
+// ─── Shared tooltip ───────────────────────────────────────────────────────────
+const ChartTooltip = ({ active, payload, label }: any) => {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="bg-slate-900 border border-slate-700 rounded-xl p-3 shadow-2xl text-sm min-w-[160px]">
+      <p className="font-semibold text-white mb-2 border-b border-slate-700 pb-1.5">{label}</p>
+      {payload.map((p: any, i: number) => (
+        <div key={i} className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: p.color || p.fill }} />
+            <span className="text-slate-400 text-xs">{p.name}</span>
+          </div>
+          <span className="text-white font-semibold text-xs">
+            {typeof p.value === 'number' ? p.value.toLocaleString() : p.value}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+// ─── KPI Card ─────────────────────────────────────────────────────────────────
+const KPICard = ({ label, value, icon: Icon, colorClass, iconBgColor, iconColor, loading, tooltip, hoverHint }: any) => (
+  <div title={hoverHint || label} className="group relative min-h-[108px] overflow-hidden rounded-2xl border border-slate-200/90 bg-white p-4 shadow-sm transition-shadow hover:shadow-md dark:border-slate-800 dark:bg-slate-900/50">
+    <div className="flex justify-between items-start mb-2">
+      <div className="flex items-center gap-1.5">
+        <h3 className="text-slate-500 dark:text-slate-400 font-medium text-[11px] md:text-xs leading-tight">{label}</h3>
+        {tooltip && <InfoTooltip title={label} {...tooltip} />}
+      </div>
+      <div className={`p-1.5 rounded-lg ${iconBgColor || 'bg-slate-100 dark:bg-slate-800'} ${iconColor || 'text-slate-600 dark:text-slate-400'}`}>
+        <Icon className="w-3.5 h-3.5 md:w-4 md:h-4" />
+      </div>
+    </div>
+    <div>
+      {loading ? (
+        <RetailValueSkeleton className="max-w-[7rem]" />
+      ) : (
+        <div className="text-xl md:text-2xl font-bold text-slate-900 dark:text-white leading-tight">{value ?? '—'}</div>
+      )}
+    </div>
+    {hoverHint && (
+      <div className="absolute inset-x-0 bottom-0 px-3 py-1.5 text-[11px] text-slate-600 dark:text-slate-300 bg-slate-100/95 dark:bg-slate-800/95 border-t border-slate-200 dark:border-slate-700 translate-y-full group-hover:translate-y-0 transition-transform duration-200">
+        {hoverHint}
+      </div>
+    )}
+  </div>
+);
+
+/** Uiverse-style polyline dash loader (green default) — charts, table, drilldown. */
+function ReplenLoaderBlock({ label }: { label?: string }) {
+  return (
+    <div className="flex min-h-[180px] items-center justify-center py-2">
+      <ReplenishmentLineLoader size={80} label={label} />
+    </div>
+  );
+}
+
+// ─── Section wrapper ──────────────────────────────────────────────────────────
+const ChartCard = ({ title, subtitle, icon: Icon, iconColor = 'text-emerald-400', children, loading }: any) => (
+  <div className="rounded-2xl border border-slate-200/90 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900/50 sm:p-6">
+    <div className="mb-6 flex items-center justify-between">
+      <div>
+        <h3 className="text-base font-semibold tracking-tight text-slate-900 dark:text-white">{title}</h3>
+        {subtitle ? <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{subtitle}</p> : null}
+      </div>
+      <div className={`p-2 bg-emerald-500/10 rounded-lg ${iconColor}`}>
+        <Icon className="w-5 h-5" />
+      </div>
+    </div>
+    {loading ? (
+      <div className="relative overflow-hidden rounded-xl border border-emerald-100/80 bg-transparent dark:border-emerald-900/30">
+        <div className="pointer-events-none absolute inset-0 opacity-[0.06] dark:opacity-[0.1] [background-image:repeating-linear-gradient(90deg,transparent,transparent_12px,currentColor_12px,currentColor_13px)]" />
+        <ReplenLoaderBlock />
+      </div>
+    ) : children}
+  </div>
+);
+
+// ─── Sort icon ────────────────────────────────────────────────────────────────
+const SortIcon = ({ col, sortBy, sortOrder }: any) => {
+  if (sortBy !== col) return <ArrowUpDown className="w-3 h-3 text-slate-400 ml-1 inline" />;
+  return sortOrder === 'DESC'
+    ? <ArrowDown className="w-3 h-3 text-emerald-500 ml-1 inline" />
+    : <ArrowUp className="w-3 h-3 text-emerald-500 ml-1 inline" />;
+};
+
+// ─── Main Page ────────────────────────────────────────────────────────────────
+export default function ReplenishmentsRecom() {
+  const [summary, setSummary] = useState<any>(null);
+  const [siteData, setSiteData] = useState<any[]>([]);
+  const [skuData, setSkuData] = useState<any[]>([]);
+  const [recommendations, setRecommendations] = useState<any[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loadingKPI, setLoadingKPI] = useState(true);
+  const [loadingCharts, setLoadingCharts] = useState(true);
+  const [loadingTable, setLoadingTable] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const [drilldownConfig, setDrilldownConfig] = useState<{ type: 'site' | 'sku', filterVal: string } | null>(null);
+  const [drilldownData, setDrilldownData] = useState<any[]>([]);
+  const [loadingDrilldown, setLoadingDrilldown] = useState(false);
+  const [rowDetailModal, setRowDetailModal] = useState<any | null>(null);
+  const [unfilledRows, setUnfilledRows] = useState<any[]>([]);
+  const [unfilledTotalRows, setUnfilledTotalRows] = useState(0);
+  const [unfilledTotalQty, setUnfilledTotalQty] = useState(0);
+  const [loadingUnfilled, setLoadingUnfilled] = useState(true);
+  const [recomTableMode, setRecomTableMode] = useState<RecomTableMode>('wh_store');
+  const [transferRecs, setTransferRecs] = useState<any[]>([]);
+  const [transferSuggestModal, setTransferSuggestModal] = useState<{ rec: any; transfer: any | null } | null>(null);
+
+  // Filters & pagination
+  const {
+    repSite,
+    setRepSite,
+    repSiteId,
+    setRepSiteId,
+    repSKU,
+    setRepSKU,
+    repMonth,
+    setRepMonth,
+    repWeek,
+    setRepWeek,
+    setRepRecomTableMode,
+  } = useFilters();
+  const [sortBy, setSortBy] = useState('forecasted_refill');
+  const [sortOrder, setSortOrder] = useState('DESC');
+  const [page, setPage] = useState(1);
+  const PER_PAGE = 20;
+  const [recomSearchInput, setRecomSearchInput] = useState('');
+  const [recomSearchDebounced, setRecomSearchDebounced] = useState('');
+  /** First KPI load forces backend to drop in-memory snapshot so new code / synced data applies. */
+  const replenSnapshotBustOnce = useRef(true);
+  /** Wide recommendations table: horizontal scroll container (scrollbar under the table). */
+  const replenTableHScrollRef = useRef<HTMLDivElement | null>(null);
+  /** Last key we centered for — skip when only pagination changes. */
+  const replenTableHScrollKeyRef = useRef<string>('');
+
+  const BASE = `${API_URL}/replenishments-recom`;
+
+  const replFilt = useMemo(
+    () => ({ repSite, repSiteId, repSKU, repMonth, repWeek }),
+    [repSite, repSiteId, repSKU, repMonth, repWeek]
+  );
+
+  const replSisterOpts = useMemo(
+    () =>
+      recomTableMode === 'site_transfer'
+        ? { refillSource: REPLEN_SITE_TRANSFER_REFILL_SOURCE }
+        : undefined,
+    [recomTableMode]
+  );
+
+  const transferLookup = useMemo(() => buildTransferLookup(transferRecs), [transferRecs]);
+
+  /** Filters / sort / mode (not page) — when these change we re-center horizontal scroll. */
+  const replenTableScrollCenterKey = useMemo(
+    () =>
+      [
+        recomTableMode,
+        repSite,
+        repSiteId,
+        repSKU,
+        repMonth,
+        repWeek,
+        recomSearchDebounced,
+        sortBy,
+        sortOrder,
+      ].join('|'),
+    [
+      recomTableMode,
+      repSite,
+      repSiteId,
+      repSKU,
+      repMonth,
+      repWeek,
+      recomSearchDebounced,
+      sortBy,
+      sortOrder,
+    ]
+  );
+
+  const scrollReplenTableToHorizontalMiddle = useCallback(() => {
+    const el = replenTableHScrollRef.current;
+    if (!el) return;
+    const max = el.scrollWidth - el.clientWidth;
+    if (max <= 0) return;
+    el.scrollLeft = max / 2;
+  }, []);
+
+  /** Default: table strip scrolled to middle (wide `min-w` table). Pagination alone does not reset. */
+  useEffect(() => {
+    if (loadingTable) return;
+    const key = replenTableScrollCenterKey;
+    if (replenTableHScrollKeyRef.current === key) return;
+    replenTableHScrollKeyRef.current = key;
+    let inner = 0;
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => scrollReplenTableToHorizontalMiddle());
+    });
+    return () => {
+      cancelAnimationFrame(outer);
+      cancelAnimationFrame(inner);
+    };
+  }, [loadingTable, replenTableScrollCenterKey, scrollReplenTableToHorizontalMiddle]);
+
+  useEffect(() => {
+    setRepRecomTableMode(recomTableMode);
+    return () => setRepRecomTableMode('wh_store');
+  }, [recomTableMode, setRepRecomTableMode]);
+
+  const recomHeadCols = useMemo(() => {
+    const base: {
+      label: string;
+      col: string | null;
+      align: 'left' | 'right' | 'center';
+      thExtraClass?: string;
+    }[] = [
+        { label: 'Site', col: 'Site', align: 'left' },
+        { label: 'Site ID', col: 'Site_ID', align: 'left' },
+        { label: 'SKU', col: 'SKU', align: 'left' },
+        { label: 'Barcode', col: 'Barcode', align: 'left' },
+        { label: 'Size', col: 'Size', align: 'center' },
+        { label: 'Season', col: 'Season', align: 'center' },
+        { label: 'Week no.', col: 'Week', align: 'center' },
+        { label: 'Week (calendar dates)', col: 'Week_Date_Range', align: 'center' },
+        { label: 'Overall total sales', col: 'total_sales', align: 'right' },
+        { label: 'Sold units — last 35 days', col: 'sold_qty_prev_35d', align: 'right' },
+        { label: 'Sold units — last week', col: 'lag1_sold_qty', align: 'right' },
+        { label: 'Last selling date', col: 'last_selling_date', align: 'center' },
+        { label: 'Days since last sale', col: 'days_since_last_sale', align: 'right' },
+        { label: 'Stock Status', col: 'dead_stock_status', align: 'left' },
+        { label: 'Store SOH', col: 'Store_Soh', align: 'right' },
+        { label: 'Last week store SOH', col: 'last_week_store_soh', align: 'right' },
+        { label: 'WH SOH', col: 'WH_Soh', align: 'right' },
+        { label: 'WH SOH after allocation', col: 'wh_soh_end_barcode', align: 'right' },
+        { label: 'Forecasted Sales', col: 'forecasted_refill', align: 'right' },
+        {
+          label: 'Covered from store stock',
+          col: 'covered_by_store_soh',
+          align: 'right',
+        },
+        {
+          label: 'Covered from warehouse stock',
+          col: 'covered_by_wh_soh',
+          align: 'right',
+        },
+        {
+          label: 'total_covered(store+wh_soh)',
+          col: 'total_fulfilled_qty',
+          align: 'right',
+        },
+      ];
+    if (recomTableMode === 'wh_store') {
+      return [
+        ...base,
+        { label: 'SITE_TO_SITE_TRANSFER_REQUIRED(QTY)', col: 'unfilled_qty', align: 'right' },
+        { label: 'Priority score', col: 'priority_score', align: 'right' },
+        { label: 'Refill type / source', col: 'refill_source', align: 'left' },
+        { label: 'System recommendation', col: 'Recommendation_Comment', align: 'left' },
+        { label: 'Refill / planner note', col: 'refill_note', align: 'left' },
+      ];
+    }
+    return [
+      ...base,
+      { label: 'Donor store (from)', col: null, align: 'left' },
+      { label: 'SITE_TO_SITE_TRANSFER_REQUIRED(QTY)', col: 'unfilled_qty', align: 'right' },
+      { label: 'Action', col: null, align: 'center' },
+      { label: 'Priority score', col: 'priority_score', align: 'right' },
+      { label: 'Refill type / source', col: 'refill_source', align: 'left' },
+      { label: 'System recommendation', col: 'Recommendation_Comment', align: 'left' },
+      { label: 'Refill / planner note', col: 'refill_note', align: 'left' },
+    ];
+  }, [recomTableMode]);
+
+  const recomTableColCount = recomHeadCols.length;
+
+  // ─── Fetchers ────────────────────────────────────────────────────────────────
+  const buildParams = useCallback((extra: Record<string, string> = {}) => {
+    const params = new URLSearchParams();
+    if (repSite !== 'All Sites') params.set('site', repSite);
+    if (repSiteId !== 'All Site IDs') params.set('site_id', repSiteId);
+    if (repSKU !== 'All SKUs') params.set('sku', repSKU);
+    if (repMonth !== 'All Months') params.set('month', repMonth);
+    if (repWeek !== 'All Weeks' && repWeek !== 'All') params.set('week', repWeek);
+    Object.entries(extra).forEach(([k, v]) => params.set(k, v));
+    const s = params.toString();
+    return s ? `?${s}` : '';
+  }, [repSite, repSiteId, repSKU, repMonth, repWeek]);
+
+  const fetchKPI = useCallback(async () => {
+    setLoadingKPI(true);
+    try {
+      const bust = replenSnapshotBustOnce.current;
+      if (bust) replenSnapshotBustOnce.current = false;
+      const qs = buildParams(bust ? { refresh_snapshot: 'true' } : {});
+      const r = await fetch(`${BASE}/summary${qs}`).then(x => x.json());
+      if (r.error) setError(r.error); else { setSummary(r); setError(null); }
+    } catch (e: any) { setError(e.message); } finally { setLoadingKPI(false); }
+  }, [BASE, buildParams]);
+
+  const fetchCharts = useCallback(async () => {
+    setLoadingCharts(true);
+    try {
+      const [site, sku] = await Promise.all([
+        fetch(`${BASE}/by-site${buildParams()}`).then(r => r.json()),
+        fetch(`${BASE}/by-sku${buildParams()}`).then(r => r.json()),
+      ]);
+      setSiteData(site.data || []);
+      setSkuData(sku.data || []);
+    } catch (e) { console.error(e); } finally { setLoadingCharts(false); }
+  }, [BASE, buildParams]);
+
+  const fetchDrilldown = useCallback(async (type: 'site' | 'sku', filterVal: string) => {
+    setLoadingDrilldown(true);
+    setDrilldownConfig({ type, filterVal });
+    try {
+      const p = buildParams({ type, filter_val: filterVal });
+      const res = await fetch(`${BASE}/drilldown${p}`).then(r => r.json());
+      setDrilldownData(res.data || []);
+    } catch (e) { console.error(e); } finally { setLoadingDrilldown(false); }
+  }, [BASE, buildParams]);
+
+  const fetchTable = useCallback(async () => {
+    setLoadingTable(true);
+    try {
+      if (recomTableMode === 'site_transfer') {
+        const baseQs = buildParams().replace(/^\?/, '');
+        const params = new URLSearchParams(baseQs);
+        params.set('limit', String(PER_PAGE));
+        params.set('offset', String((page - 1) * PER_PAGE));
+        params.set('sort_by', sortBy);
+        params.set('sort_order', sortOrder);
+        params.set('refill_source', SITE_TRANSFER_REFILL_SOURCE);
+        if (recomSearchDebounced.trim()) params.set('search', recomSearchDebounced.trim());
+
+        const tp = new URLSearchParams();
+        if (repSite && repSite !== 'All Sites') tp.set('recv_site', repSite);
+        if (repSiteId && repSiteId !== 'All Site IDs') tp.set('recv_site_id', repSiteId);
+        if (repSKU && repSKU !== 'All SKUs') tp.set('recv_sku', repSKU);
+        if (repMonth && repMonth !== 'All Months') tp.set('recv_month', repMonth);
+        if (repWeek && repWeek !== 'All Weeks' && repWeek !== 'All') tp.set('recv_week', repWeek);
+        const tqs = tp.toString();
+
+        const [replenRes, transferRes] = await Promise.all([
+          fetch(`${BASE}/recommendations?${params}`).then((r) => r.json()),
+          fetch(`${API_URL}/transfers-recom/recommendations${tqs ? `?${tqs}` : ''}`).then((r) => r.json()),
+        ]);
+
+        if (replenRes.error) {
+          setError(replenRes.error);
+          setRecommendations([]);
+          setTotal(0);
+          setTransferRecs([]);
+          return;
+        }
+
+        const rows = Array.isArray(replenRes.data) ? replenRes.data : [];
+        const transfers = Array.isArray(transferRes?.data) ? transferRes.data : [];
+        setTransferRecs(transfers);
+        setRecommendations(rows);
+        setTotal(Number(replenRes.total ?? rows.length));
+        setError(null);
+        return;
+      }
+
+      const baseQs = buildParams().replace(/^\?/, '');
+      const params = new URLSearchParams(baseQs);
+      params.set('limit', String(PER_PAGE));
+      params.set('offset', String((page - 1) * PER_PAGE));
+      params.set('sort_by', sortBy);
+      params.set('sort_order', sortOrder);
+      if (recomSearchDebounced) params.set('search', recomSearchDebounced);
+
+      const res = await fetch(`${BASE}/recommendations?${params}`).then(r => r.json());
+      if (res.error) setError(res.error);
+      else {
+        setTransferRecs([]);
+        setRecommendations(res.data || []);
+        setTotal(res.total || 0);
+        setError(null);
+      }
+    } catch (e: any) {
+      console.error(e);
+      setError(e.message);
+    } finally {
+      setLoadingTable(false);
+    }
+  }, [
+    BASE,
+    buildParams,
+    page,
+    sortBy,
+    sortOrder,
+    recomTableMode,
+    recomSearchDebounced,
+    repSite,
+    repSiteId,
+    repSKU,
+    repMonth,
+    repWeek,
+  ]);
+
+  const fetchUnfilledCrossVerify = useCallback(async () => {
+    setLoadingUnfilled(true);
+    try {
+      const baseQs = buildParams().replace(/^\?/, '');
+      const params = new URLSearchParams(baseQs);
+      params.set('limit', '50');
+      params.set('offset', '0');
+      const res = await fetch(`${BASE}/unfilled-cross-verify?${params}`).then(r => r.json());
+      setUnfilledRows(res.data || []);
+      setUnfilledTotalRows(res.total_rows || 0);
+      setUnfilledTotalQty(res.total_unfilled_qty || 0);
+    } catch (e) {
+      console.error(e);
+      setUnfilledRows([]);
+      setUnfilledTotalRows(0);
+      setUnfilledTotalQty(0);
+    } finally {
+      setLoadingUnfilled(false);
+    }
+  }, [BASE, buildParams]);
+
+  useEffect(() => {
+    const id = window.setTimeout(() => setRecomSearchDebounced(recomSearchInput.trim()), 280);
+    return () => window.clearTimeout(id);
+  }, [recomSearchInput]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [recomSearchDebounced, repSite, repSiteId, repSKU, repMonth, repWeek, recomTableMode]);
+
+  useEffect(() => { fetchKPI(); fetchCharts(); }, [fetchKPI, fetchCharts]);
+  useEffect(() => { fetchTable(); }, [fetchTable]);
+  useEffect(() => { fetchUnfilledCrossVerify(); }, [fetchUnfilledCrossVerify]);
+
+  const totalPages = Math.ceil(total / PER_PAGE);
+
+  const activeReplFilterCount = useMemo(() => {
+    let n = 0;
+    if (recomSearchDebounced) n += 1;
+    if (repSite !== 'All Sites') n += 1;
+    if (repSiteId !== 'All Site IDs') n += 1;
+    if (repSKU !== 'All SKUs') n += 1;
+    if (repMonth !== 'All Months') n += 1;
+    if (repWeek !== 'All Weeks' && repWeek !== 'All') n += 1;
+    return n;
+  }, [recomSearchDebounced, repSite, repSiteId, repSKU, repMonth, repWeek]);
+
+  const clearReplTableFilters = useCallback(() => {
+    setRecomSearchInput('');
+    setRecomSearchDebounced('');
+    setRepSite('All Sites');
+    setRepSiteId('All Site IDs');
+    setRepSKU('All SKUs');
+    setRepMonth('All Months');
+    setRepWeek('All Weeks');
+    setPage(1);
+  }, [setRepSite, setRepSiteId, setRepSKU, setRepMonth, setRepWeek]);
+
+  const handleSort = (col: string) => {
+    if (sortBy === col) setSortOrder(o => o === 'DESC' ? 'ASC' : 'DESC');
+    else { setSortBy(col); setSortOrder('DESC'); }
+    setPage(1);
+  };
+
+  const handleExport = useCallback(() => {
+    const params = new URLSearchParams();
+    if (repSite !== 'All Sites') params.set('site', repSite);
+    if (repSiteId !== 'All Site IDs') params.set('site_id', repSiteId);
+    if (repSKU !== 'All SKUs') params.set('sku', repSKU);
+    if (repMonth !== 'All Months') params.set('month', repMonth);
+    if (repWeek !== 'All Weeks' && repWeek !== 'All') params.set('week', repWeek);
+    if (recomSearchDebounced) params.set('search', recomSearchDebounced);
+
+    if (recomTableMode === 'site_transfer') {
+      params.set('refill_source', SITE_TRANSFER_REFILL_SOURCE);
+    }
+
+    params.set('sort_by', sortBy);
+    params.set('sort_order', sortOrder);
+
+    const url = `${BASE}/download-recommendations?${params.toString()}`;
+    window.location.href = url;
+  }, [repSite, repSiteId, repSKU, repMonth, repWeek, recomSearchDebounced, recomTableMode, sortBy, sortOrder, BASE]);
+
+  // ─── Render ───────────────────────────────────────────────────────────────────
+  return (
+    <DashboardLayout>
+      <div className="mx-auto max-w-[1920px] space-y-8 pb-10">
+
+        <div className="relative overflow-hidden rounded-2xl border border-slate-200/90 bg-white px-6 py-6 shadow-sm dark:border-slate-800 dark:bg-slate-900/60">
+          <div
+            className="pointer-events-none absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-emerald-500 via-teal-500 to-indigo-500 opacity-90"
+            aria-hidden
+          />
+          <div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-4">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500/20 to-teal-500/10 text-emerald-600 ring-1 ring-emerald-500/20 dark:from-emerald-400/15 dark:to-teal-500/10 dark:text-emerald-300 dark:ring-emerald-400/20">
+                <Layers className="h-6 w-6" aria-hidden />
+              </div>
+              <div>
+                <h1 className="text-2xl font-semibold tracking-tight text-slate-900 dark:text-white sm:text-[1.65rem]">
+                  Replenishments
+                </h1>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {error && (
+          <div className="p-4 rounded-xl border flex flex-col gap-2 bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400">
+            <div className="flex items-center gap-2 font-bold uppercase text-xs tracking-wider">
+              <Activity className="w-4 h-4 ml-[-2px]" />
+              Data Sync Error
+            </div>
+            <p className="text-sm">{error}</p>
+          </div>
+        )}
+
+        {/* ── KPI Row ── */}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
+          <KPICard
+            label="Forecasted Refill Qty"
+            value={(
+              summary?.predicted_qty_sum ??
+              summary?.forecasted_refill_qty ??
+              summary?.forecasted_refill ??
+              0
+            ).toLocaleString()}
+            icon={TrendingUp}
+            iconBgColor="bg-violet-50 dark:bg-violet-500/10"
+            iconColor="text-violet-600 dark:text-violet-400"
+            loading={loadingKPI}
+            tooltip={{
+              description: 'Store + warehouse fillable quantity plus remaining unfilled need, for the current filters.',
+              formula:
+                'SUM(covered_by_store_soh) + SUM(covered_by_wh_soh) + SUM(unfilled_qty)',
+            }}
+            hoverHint={
+              summary?.forecasted_refill_qty_components
+                ? `Store ${Number(summary.forecasted_refill_qty_components.covered_by_store_soh ?? 0).toLocaleString()} + WH ${Number(summary.forecasted_refill_qty_components.covered_by_wh_soh ?? 0).toLocaleString()} + Unfilled ${Number(summary.forecasted_refill_qty_components.unfilled_qty ?? 0).toLocaleString()} · ${summary.predicted_qty_filtered_row_count ?? 0} rows`
+                : `${summary?.predicted_qty_filtered_row_count ?? 0} rows after filters.`
+            }
+          />
+          <KPICard
+            label="Store SOH Fillable Qty"
+            value={Number(summary?.store_soh_fillable_qty ?? 0).toLocaleString()}
+            icon={Package}
+            iconBgColor="bg-teal-50 dark:bg-teal-500/10"
+            iconColor="text-teal-600 dark:text-teal-400"
+            loading={loadingKPI}
+            tooltip={{
+              description: "Quantity covered from store SOH as reported by the replenishment pipeline.",
+              formula: "SUM(covered_by_store_soh)",
+            }}
+            hoverHint="Sum of store-SOH fillable quantity."
+          />
+          <KPICard
+            label="WH Fillable Qty"
+            value={Number(summary?.wh_fillable_qty ?? 0).toLocaleString()}
+            icon={Database}
+            iconBgColor="bg-emerald-50 dark:bg-emerald-500/10"
+            iconColor="text-emerald-600 dark:text-emerald-400"
+            loading={loadingKPI}
+            tooltip={{
+              description: "Quantity covered from warehouse SOH as reported by the replenishment pipeline.",
+              formula: "SUM(covered_by_wh_soh)",
+            }}
+            hoverHint="Sum of warehouse fillable quantity."
+          />
+          <KPICard
+            label="Unfilled qty"
+            value={Number(
+              summary?.site_to_site_unfilled_qty ?? summary?.unfilled_after_store_wh_count ?? 0
+            ).toLocaleString()}
+            icon={BarChart2}
+            iconBgColor="bg-red-50 dark:bg-red-500/10"
+            iconColor="text-red-600 dark:text-red-400"
+            loading={loadingKPI}
+            tooltip={{
+              description:
+                'Total still-unfilled quantity across all rows matching your filters (same basis as Forecasted Refill). The Site → site transfer tab narrows to the site-to-site queue only.',
+              formula: 'SUM(unfilled_qty)',
+            }}
+            hoverHint="All filtered rows · Use Site → site transfer for the queue-only view."
+          />
+        </div>
+
+        {/* ── Charts Row: Top Sites + Top SKUs ── */}
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+
+          {/* Top stores */}
+          <ChartCard title="Top stores" subtitle={null} icon={TrendingUp} iconColor="text-emerald-400" loading={loadingCharts}>
+            {siteData.length > 0 ? (
+              <div className="h-72">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={siteData.slice(0, 5)} layout="vertical" margin={{ left: -10, right: 24, top: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#334155" opacity={0.5} />
+                    <XAxis type="number" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#94a3b8' }} />
+                    <YAxis
+                      type="category" dataKey="site"
+                      axisLine={false} tickLine={false}
+                      tick={{ fontSize: 11, fill: '#94a3b8' }} width={140}
+                      tickFormatter={(v: string) => v.length > 18 ? v.slice(0, 18) + '…' : v}
+                    />
+                    <Tooltip content={<ChartTooltip />} cursor={{ fill: 'rgba(255,255,255,0.05)' }} />
+                    <Bar
+                      dataKey="total_sales"
+                      name="Sales Units"
+                      fill="#10b981"
+                      radius={[0, 4, 4, 0]}
+                      barSize={28}
+                      onClick={(data: any) => fetchDrilldown('site', data?.site || data?.payload?.site)}
+                      cursor="pointer"
+                    />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            ) : (
+              <div className="h-72 flex items-center justify-center text-slate-400 text-sm font-medium">No site data recorded</div>
+            )}
+          </ChartCard>
+
+          {/* Top SKUs */}
+          <ChartCard title="Top SKUs" subtitle={null} icon={TrendingUp} iconColor="text-amber-400" loading={loadingCharts}>
+            {skuData.length > 0 ? (
+              <div className="h-72">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={skuData.slice(0, 5)} layout="vertical" margin={{ left: -10, right: 24, top: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#334155" opacity={0.5} />
+                    <XAxis type="number" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#94a3b8' }} />
+                    <YAxis
+                      type="category" dataKey="sku"
+                      axisLine={false} tickLine={false}
+                      tick={{ fontSize: 11, fontFamily: 'ui-monospace', fill: '#94a3b8' }} width={140}
+                    />
+                    <Tooltip content={<ChartTooltip />} cursor={{ fill: 'rgba(255,255,255,0.05)' }} />
+                    <Bar
+                      dataKey="total_sales"
+                      name="Sales Units"
+                      fill="#f59e0b"
+                      radius={[0, 4, 4, 0]}
+                      barSize={28}
+                      onClick={(data: any) => fetchDrilldown('sku', data?.sku || data?.payload?.sku)}
+                      cursor="pointer"
+                    />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            ) : (
+              <div className="h-72 flex items-center justify-center text-slate-400 text-sm font-medium">No SKU data recorded</div>
+            )}
+          </ChartCard>
+        </div>
+
+        {/* ── Recommendations table ── */}
+        <div className="mt-2 overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900/50">
+          <div className="flex flex-col gap-4 border-b border-slate-100 bg-gradient-to-r from-slate-50/90 to-white px-4 py-4 dark:border-slate-800 dark:from-slate-900/80 dark:to-slate-900/40 sm:flex-row sm:items-center sm:justify-between sm:px-6 sm:py-5">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-500/10 text-indigo-600 dark:bg-indigo-500/15 dark:text-indigo-300">
+                <Database className="h-5 w-5" aria-hidden />
+              </div>
+              <h2 className="text-lg font-semibold tracking-tight text-slate-900 dark:text-white">Replenishments</h2>
+            </div>
+            <div
+              className="inline-flex w-full shrink-0 rounded-xl border border-slate-200/90 bg-white/90 p-1 shadow-sm dark:border-slate-600 dark:bg-slate-800/90 sm:w-auto"
+              role="group"
+              aria-label="Table view"
+            >
+              <button
+                type="button"
+                onClick={() => { setPage(1); setRecomTableMode('wh_store'); }}
+                className={`flex-1 rounded-lg px-4 py-2 text-xs font-semibold transition-colors sm:flex-none ${recomTableMode === 'wh_store'
+                    ? 'bg-slate-900 text-white shadow-sm dark:bg-white dark:text-slate-900'
+                    : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
+                  }`}
+              >
+                Store / WH
+              </button>
+              <button
+                type="button"
+                onClick={() => { setPage(1); setRecomTableMode('site_transfer'); }}
+                className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold transition-colors sm:flex-none ${recomTableMode === 'site_transfer'
+                    ? 'bg-amber-500 text-white shadow-sm dark:bg-amber-500/90'
+                    : 'text-slate-500 hover:text-amber-800 dark:text-slate-400 dark:hover:text-amber-200'
+                  }`}
+              >
+                <Truck className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                Site → site
+              </button>
+            </div>
+          </div>
+
+          <div className="border-b border-slate-100 bg-slate-50/40 px-4 py-4 dark:border-slate-800 dark:bg-slate-900/30 sm:px-6">
+            <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+              <div className="relative min-w-0 flex-1">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="search"
+                  value={recomSearchInput}
+                  onChange={(e) => setRecomSearchInput(e.target.value)}
+                  placeholder="Search site, site ID, SKU, barcode…"
+                  className={`w-full rounded-xl border border-slate-200/90 bg-white py-2.5 pl-10 pr-10 text-sm text-slate-900 shadow-sm outline-none transition-all placeholder:text-slate-400 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/15 dark:border-slate-700 dark:bg-slate-900 dark:text-white dark:placeholder:text-slate-500 dark:focus:border-indigo-500/50 ${recomSearchDebounced ? 'ring-1 ring-indigo-500/20' : ''
+                    }`}
+                  aria-label="Search recommendations"
+                />
+                {recomSearchInput ? (
+                  <button
+                    type="button"
+                    onClick={() => setRecomSearchInput('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+                    aria-label="Clear search"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                ) : null}
+              </div>
+              <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                {activeReplFilterCount > 0 ? (
+                  <span className="rounded-full bg-indigo-500/10 px-3 py-1 text-[11px] font-semibold text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-200">
+                    {activeReplFilterCount} active
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={handleExport}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-semibold text-indigo-700 shadow-sm transition-colors hover:bg-indigo-100 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-300 dark:hover:bg-indigo-500/20"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  Export
+                </button>
+                <button
+                  type="button"
+                  onClick={clearReplTableFilters}
+                  disabled={activeReplFilterCount === 0}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 shadow-sm transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-800/80"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  Reset
+                </button>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-end gap-2 gap-y-3">
+              <FilterDropdown
+                label="Site"
+                icon={Store}
+                value={repSite}
+                onChange={setRepSite}
+                endpoint="/replenishments-recom/filters/sites"
+                defaultValue="All Sites"
+                sisterQuery={buildReplenishmentSisterQuery('site', replFilt, replSisterOpts)}
+              />
+              <FilterDropdown
+                label="Site ID"
+                icon={Hash}
+                value={repSiteId}
+                onChange={setRepSiteId}
+                endpoint="/replenishments-recom/filters/site-ids"
+                defaultValue="All Site IDs"
+                sisterQuery={buildReplenishmentSisterQuery('site_id', replFilt, replSisterOpts)}
+              />
+              <FilterDropdown
+                label="SKU"
+                icon={Box}
+                value={repSKU}
+                onChange={setRepSKU}
+                endpoint="/replenishments-recom/filters/skus"
+                defaultValue="All SKUs"
+                sisterQuery={buildReplenishmentSisterQuery('sku', replFilt, replSisterOpts)}
+              />
+              <FilterDropdown
+                label="Month"
+                icon={Calendar}
+                value={repMonth}
+                onChange={setRepMonth}
+                endpoint="/replenishments-recom/filters/months"
+                defaultValue="All Months"
+                sisterQuery={buildReplenishmentSisterQuery('month', replFilt, replSisterOpts)}
+              />
+              <FilterDropdown
+                label="Week"
+                icon={Calendar}
+                value={repWeek}
+                onChange={setRepWeek}
+                endpoint="/replenishments-recom/filters/weeks"
+                defaultValue="All Weeks"
+                sisterQuery={buildReplenishmentSisterQuery('week', replFilt, replSisterOpts)}
+              />
+            </div>
+          </div>
+
+          <div ref={replenTableHScrollRef} className="custom-scrollbar overflow-x-auto">
+            <table className="w-full min-w-[2760px] border-collapse text-left">
+              <thead>
+                <tr className="border-b border-slate-200/80 bg-slate-50/90 dark:border-slate-700 dark:bg-slate-800/40">
+                  {recomHeadCols.map(({ label, col, align, thExtraClass }) => (
+                    <th
+                      key={label}
+                      onClick={col ? () => handleSort(col) : undefined}
+                      className={`whitespace-nowrap px-4 py-3.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 ${align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left'
+                        } ${thExtraClass || ''} ${col ? 'cursor-pointer select-none hover:text-indigo-600 dark:hover:text-indigo-300' : ''
+                        }`}
+                    >
+                      <div className={`flex items-center gap-1.5 ${align === 'right' ? 'justify-end' : align === 'center' ? 'justify-center' : ''}`}>
+                        {label}
+                        {col && <SortIcon col={col} sortBy={sortBy} sortOrder={sortOrder} />}
+                      </div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {loadingTable ? (
+                  <tr>
+                    <td
+                      colSpan={recomTableColCount}
+                      className="relative min-h-[min(42vh,360px)] p-0 align-top"
+                    >
+                      <div className="pointer-events-none absolute inset-0 border-y border-emerald-100/50 bg-gradient-to-r from-emerald-50/40 via-slate-50/30 to-transparent dark:border-emerald-900/20 dark:from-emerald-950/30 dark:via-slate-900/50 dark:to-transparent" />
+                      <div className="pointer-events-none absolute inset-0 opacity-[0.05] dark:opacity-[0.08] [background-image:repeating-linear-gradient(-12deg,transparent,transparent_18px,rgba(16,185,129,0.12)_18px,rgba(16,185,129,0.12)_19px)]" />
+                      <div className="relative z-10 flex min-h-[min(42vh,360px)] w-full items-center justify-center py-8">
+                        <ReplenLoaderBlock />
+                      </div>
+                    </td>
+                  </tr>
+                ) : recommendations.length === 0 ? (
+                  <tr>
+                    <td colSpan={recomTableColCount} className="px-4 py-20 text-center">
+                      <div className="flex flex-col items-center justify-center gap-2 text-slate-400 max-w-lg mx-auto">
+                        <Package className="w-12 h-12 opacity-10" />
+                        <span className="text-sm font-medium text-slate-500 dark:text-slate-400">
+                          {recomTableMode === 'site_transfer'
+                            ? 'No rows match these filters in the site-to-site queue.'
+                            : 'No rows match these filters.'}
+                        </span>
+                        {recomTableMode === 'wh_store' && (
+                          <p className="text-xs text-slate-500 dark:text-slate-500">
+                            Some lines only appear under <strong className="text-slate-600 dark:text-slate-300">Site → site</strong>. Try that view or relax filters.
+                          </p>
+                        )}
+                        {recomTableMode === 'site_transfer' && (
+                          <p className="text-xs text-slate-500 dark:text-slate-500">
+                            Widen filters, clear search, or confirm transfer recommendations are synced.
+                          </p>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ) : (
+                  recommendations.map((rec, i) => {
+                    const fill = computeFillBreakdown(rec);
+                    const tr =
+                      recomTableMode === 'site_transfer'
+                        ? (rec._transfer ?? findTransferForRec(transferLookup, rec))
+                        : null;
+                    const donorLabel = sanitizeCellText(
+                      tr ? tr.donor_site || tr.donor_store_name || tr.donor_store || '—' : '—'
+                    ) || '—';
+                    const lakeUnfilled = Number(rec.unfilled_qty ?? fill.unfilled);
+                    const hasLakeCovStore =
+                      rec.covered_by_store_soh != null && rec.covered_by_store_soh !== '';
+                    const hasLakeCovWh = rec.covered_by_wh_soh != null && rec.covered_by_wh_soh !== '';
+                    const covStore = hasLakeCovStore ? Number(rec.covered_by_store_soh) : fill.covered_store;
+                    const covWh = hasLakeCovWh ? Number(rec.covered_by_wh_soh) : fill.covered_wh;
+                    const lakeFulfilled = Number(
+                      rec.total_fulfilled_qty != null && rec.total_fulfilled_qty !== ''
+                        ? rec.total_fulfilled_qty
+                        : covStore + covWh
+                    );
+                    const lakeRefillSource = sanitizeCellText(rec.refill_source ?? '');
+
+                    const transferKey =
+                      recomTableMode === 'site_transfer' && tr
+                        ? String(tr.id ?? tr.transfer_id ?? '').trim()
+                        : '';
+                    const rowStableKey =
+                      transferKey !== ''
+                        ? `st-${transferKey}`
+                        : `r-${page}-${(page - 1) * PER_PAGE + i}-${sanitizeCellText(rec.barcode)}-${sanitizeCellText(rec.sku)}`;
+
+                    return (
+                      <tr key={rowStableKey} className="hover:bg-slate-50/80 dark:hover:bg-indigo-500/5 transition-all group border-b border-slate-50 dark:border-slate-800/50">
+                        <td className="min-w-0 px-4 py-4 text-sm font-bold text-slate-700 dark:text-slate-200 border-l-4 border-transparent group-hover:border-indigo-500 transition-all">
+                          <div className="truncate max-w-[240px]">
+                            {sanitizeCellText(rec.site) || '—'}
+                          </div>
+                        </td>
+                        <td className="min-w-0 px-4 py-4 text-xs font-mono text-slate-600 dark:text-slate-300 max-w-[140px] truncate">
+                          {sanitizeCellText(rec.site_id) || '—'}
+                        </td>
+                        <td className="min-w-0 px-4 py-4">
+                          <span className="inline-block max-w-[160px] truncate text-xs font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 px-2 py-1 rounded border border-indigo-100 dark:border-indigo-500/20 whitespace-nowrap shadow-sm">
+                            {sanitizeCellText(rec.sku) || '—'}
+                          </span>
+                        </td>
+                        <td className="min-w-0 px-4 py-4 font-mono text-xs text-slate-500 truncate">{sanitizeCellText(rec.barcode) || '—'}</td>
+                        <td className="min-w-0 px-4 py-4 text-xs font-medium text-center text-slate-500 whitespace-nowrap">{sanitizeCellText(rec.size) || '—'}</td>
+                        <td className="min-w-0 px-4 py-4 text-center">
+                          <span className="text-[10px] font-black text-emerald-600 dark:text-emerald-400 px-2 py-1 rounded bg-emerald-500/10 whitespace-nowrap uppercase tracking-widest border border-emerald-500/20">
+                            {sanitizeCellText(rec.season) || '—'}
+                          </span>
+                        </td>
+                        <td className="min-w-0 px-4 py-4 text-xs text-center text-slate-500 whitespace-nowrap font-medium">{sanitizeCellText(rec.week) || '—'}</td>
+                        <td className="min-w-0 px-4 py-4 text-xs text-center text-slate-400 whitespace-nowrap italic">{sanitizeCellText(rec.week_date_range) || '—'}</td>
+                        <td
+                          className="px-4 py-4 text-sm text-right text-slate-600 dark:text-slate-300 font-mono font-medium"
+                        >
+                          {rowTotalSales(rec).toLocaleString()}
+                        </td>
+                        <td
+                          className="px-4 py-4 text-sm text-right text-slate-600 dark:text-slate-300 font-mono font-medium"
+                        >
+                          {(Number(rec.sold_qty_prev_35d) || 0).toLocaleString()}
+                        </td>
+                        <td
+                          className="px-4 py-4 text-sm text-right text-slate-600 dark:text-slate-300 font-mono font-medium"
+                        >
+                          {(rec.lag1_sold_qty ?? 0).toLocaleString()}
+                        </td>
+                        <td
+                          className="min-w-0 px-4 py-4 text-center text-xs font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap"
+                        >
+                          {formatReplLastSellingDate(rec.last_selling_date)}
+                        </td>
+                        <td
+                          className="px-4 py-4 text-sm text-right text-slate-600 dark:text-slate-300 font-mono font-medium"
+                        >
+                          {formatReplDaysSinceLastSale(rec.days_since_last_sale)}
+                        </td>
+                        <td
+                          className="min-w-0 max-w-[160px] truncate px-4 py-4 text-xs text-slate-600 dark:text-slate-300"
+                        >
+                          {sanitizeCellText(rec.dead_stock_status) || '—'}
+                        </td>
+                        <td
+                          className="px-4 py-4 text-sm text-right text-slate-600 dark:text-slate-300 font-mono font-medium"
+                        >
+                          {rec.soh?.toLocaleString() ?? '0'}
+                        </td>
+                        <td
+                          className="px-4 py-4 text-sm text-right text-slate-600 dark:text-slate-300 font-mono font-medium"
+                        >
+                          {(Number(rec.last_week_store_soh) || 0).toLocaleString()}
+                        </td>
+                        <td
+                          className="px-4 py-4 text-sm text-right text-slate-600 dark:text-slate-300 font-mono font-medium"
+                        >
+                          {rec.wh_soh?.toLocaleString() ?? '0'}
+                        </td>
+                        <td
+                          className="px-4 py-4 text-sm text-right font-mono font-semibold text-indigo-600 dark:text-indigo-400"
+                        >
+                          {rec.wh_soh_end_barcode == null ? '—' : Number(rec.wh_soh_end_barcode).toLocaleString()}
+                        </td>
+                        <td className="px-4 py-4 text-right whitespace-nowrap">
+                          <button
+                            type="button"
+                            onClick={() => setRowDetailModal(rec)}
+                            className="group inline-flex w-full min-w-[7rem] items-center justify-end gap-2 rounded-lg border border-transparent bg-slate-50/80 px-2 py-1.5 font-mono text-sm font-bold text-indigo-600 transition-all hover:border-indigo-300/60 hover:bg-indigo-50/90 dark:bg-slate-800/60 dark:text-indigo-400 dark:hover:border-indigo-500/40 dark:hover:bg-indigo-500/10"
+                          >
+                            <span>{rec.forecasted?.toLocaleString() ?? '0'}</span>
+                            <ArrowRight className="h-4 w-4 shrink-0 text-slate-400 transition-colors group-hover:text-indigo-500 dark:group-hover:text-indigo-300" />
+                          </button>
+                        </td>
+                        <td
+                          className="px-4 py-4 text-sm text-right text-slate-600 dark:text-slate-300 font-mono font-medium"
+                        >
+                          {covStore.toLocaleString()}
+                        </td>
+                        <td
+                          className={`px-4 py-4 text-right text-sm font-mono ${WH_FILL_VALUE_CLASS}`}
+                        >
+                          {covWh.toLocaleString()}
+                        </td>
+                        <td
+                          className={`px-4 py-4 text-sm text-right font-mono font-semibold ${lakeFulfilled > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-500 dark:text-slate-400'
+                            }`}
+                        >
+                          {lakeFulfilled.toLocaleString()}
+                        </td>
+                        {recomTableMode === 'wh_store' ? (
+                          <>
+                            <td className="px-4 py-4 text-sm text-right font-mono text-red-600 dark:text-red-400">
+                              {lakeUnfilled.toLocaleString()}
+                            </td>
+                            <td
+                              className="px-4 py-4 text-sm text-right text-violet-600 dark:text-violet-400"
+                            >
+                              {renderPriorityScoreCell(rec)}
+                            </td>
+                            <td className="min-w-0 px-4 py-4 text-xs text-slate-600 dark:text-slate-300 max-w-[200px] truncate font-mono">
+                              {lakeRefillSource || '—'}
+                            </td>
+                          </>
+                        ) : (
+                          <>
+                            <td className="min-w-0 px-4 py-4 text-xs text-slate-600 dark:text-slate-300 max-w-[220px] truncate">
+                              {donorLabel}
+                            </td>
+                            <td className="px-4 py-4 text-sm text-right font-mono font-semibold text-amber-800 dark:text-amber-200">
+                              {lakeUnfilled.toLocaleString()}
+                            </td>
+                            <td className="px-4 py-4 text-center">
+                              <button
+                                type="button"
+                                disabled={!tr}
+                                onClick={() => tr && setTransferSuggestModal({ rec, transfer: tr })}
+                                className="text-xs font-bold text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-500/15 hover:bg-amber-200/80 dark:hover:bg-amber-500/25 border border-amber-300/60 dark:border-amber-500/30 px-2.5 py-1 rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+                              >
+                                Suggest transfer
+                              </button>
+                            </td>
+                            <td
+                              className="px-4 py-4 text-sm text-right text-violet-600 dark:text-violet-400"
+                            >
+                              {renderPriorityScoreCell(rec)}
+                            </td>
+                            <td className="min-w-0 px-4 py-4 text-xs text-slate-600 dark:text-slate-300 max-w-[180px] truncate font-mono">
+                              {lakeRefillSource || SITE_TRANSFER_REFILL_SOURCE}
+                            </td>
+                          </>
+                        )}
+                        <td
+                          className="min-w-0 px-4 py-4 text-xs text-slate-400 max-w-[200px] truncate leading-relaxed cursor-pointer hover:text-indigo-600 dark:hover:text-indigo-400"
+                          onClick={() => setRowDetailModal(rec)}
+                          role="button"
+                          tabIndex={0}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              setRowDetailModal(rec);
+                            }
+                          }}
+                        >
+                          {sanitizeCellText(rec.recommendation_comment) || '—'}
+                        </td>
+                        <td className="min-w-0 px-4 py-4 text-xs text-slate-400 max-w-[200px] truncate">{sanitizeCellText(rec.refill_note) || '—'}</td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+
+
+          <div className="flex flex-col gap-3 border-t border-slate-100 bg-slate-50/60 px-4 py-3 sm:flex-row sm:items-center sm:justify-between dark:border-slate-800 dark:bg-slate-800/20 sm:px-6">
+            <p className="text-center text-xs font-medium tabular-nums text-slate-500 dark:text-slate-400 sm:text-left">
+              <span className="text-slate-700 dark:text-slate-200">{total.toLocaleString()}</span>
+              {' · '}
+              {PER_PAGE} per page
+            </p>
+            <div className="flex items-center justify-center gap-2 sm:justify-end">
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page === 1}
+                className="rounded-lg border border-slate-200 bg-white p-2 text-slate-500 shadow-sm transition-colors hover:border-indigo-200 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-35 dark:border-slate-600 dark:bg-slate-800 dark:hover:border-indigo-500/40 dark:hover:text-indigo-300"
+                aria-label="Previous page"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </button>
+              <span className="min-w-[5.5rem] text-center text-xs font-semibold tabular-nums text-slate-800 dark:text-slate-100">
+                {page} / {totalPages || 1}
+              </span>
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={page >= totalPages}
+                className="rounded-lg border border-slate-200 bg-white p-2 text-slate-500 shadow-sm transition-colors hover:border-indigo-200 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-35 dark:border-slate-600 dark:bg-slate-800 dark:hover:border-indigo-500/40 dark:hover:text-indigo-300"
+                aria-label="Next page"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Drilldown Modal ── */}
+      {drilldownConfig && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm shadow-2xl">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl w-full max-w-6xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="p-5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50/50 dark:bg-slate-800/30">
+              <h3 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2 border-l-4 border-indigo-500 pl-3">
+                Drilldown: {drilldownConfig.filterVal}
+              </h3>
+              <button
+                onClick={() => setDrilldownConfig(null)}
+                className="p-2 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-white bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto p-5">
+              {loadingDrilldown ? (
+                <div className="flex min-h-[16rem] items-center justify-center rounded-xl border border-indigo-100/60 bg-transparent dark:border-indigo-900/25">
+                  <ReplenLoaderBlock label="Loading drill-down detail…" />
+                </div>
+              ) : (
+                <div className="rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+                  <div className="overflow-x-auto min-w-full min-h-[300px]">
+                    <table className="w-full text-left border-collapse whitespace-nowrap">
+                      <thead>
+                        <tr className="bg-slate-50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-800">
+                          {drilldownConfig.type === 'sku' && <th className="px-4 py-3 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-left">Site</th>}
+                          {drilldownConfig.type === 'site' && <th className="px-4 py-3 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">SKU</th>}
+                          <th className="px-4 py-3 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-left">Site ID</th>
+                          <th className="px-4 py-3 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-left">Barcode</th>
+                          <th className="px-4 py-3 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Size</th>
+                          <th className="px-4 py-3 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Season</th>
+                          <th className="px-4 py-3 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-center">Week no.</th>
+                          <th className="px-4 py-3 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-center">Week (dates)</th>
+                          <th className="px-4 py-3 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right">Overall total sales</th>
+                          <th className="px-4 py-3 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right">Sold — last 35 days</th>
+                          <th className="px-4 py-3 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right">Sold — last week</th>
+                          <th className="px-4 py-3 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-center">last_selling_date</th>
+                          <th className="px-4 py-3 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right">days_since_last_sale</th>
+                          <th className="px-4 py-3 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-left">dead_stock_status</th>
+                          <th className="px-4 py-3 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right">Store_SOH</th>
+                          <th className="px-4 py-3 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right">last_week_store_soh</th>
+                          <th className="px-4 py-3 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right">WH SOH</th>
+                          <th className="px-4 py-3 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right">Forecasted refill</th>
+                          <th className="px-4 py-3 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right">From store stock</th>
+                          <th className="px-4 py-3 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right">From WH stock</th>
+                          <th className="px-4 py-3 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right">total_covered(store+wh_soh)</th>
+                          <th className="px-4 py-3 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right">SITE_TO_SITE_TRANSFER_REQUIRED(QTY)</th>
+                          <th className="px-4 py-3 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right" title="Scaled priority (priority_score)">
+                            Priority score
+                          </th>
+                          <th className="px-4 py-3 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-left">Refill type / source</th>
+                          <th className="px-4 py-3 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">System recommendation</th>
+                          <th className="px-4 py-3 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Refill / planner note</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 bg-white dark:bg-transparent">
+                        {drilldownData.length === 0 ? (
+                          <tr><td colSpan={26} className="px-4 py-8 text-center text-slate-400 text-sm">No detailed records found.</td></tr>
+                        ) : (
+                          drilldownData.map((row, i) => {
+                            const ddFill = computeFillBreakdown(row);
+                            const ddCovS =
+                              row.covered_by_store_soh != null && row.covered_by_store_soh !== ''
+                                ? Number(row.covered_by_store_soh)
+                                : ddFill.covered_store;
+                            const ddCovW =
+                              row.covered_by_wh_soh != null && row.covered_by_wh_soh !== ''
+                                ? Number(row.covered_by_wh_soh)
+                                : ddFill.covered_wh;
+                            return (
+                              <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors group">
+                                {drilldownConfig.type === 'sku' && <td className="px-4 py-2.5 text-sm font-semibold text-slate-700 dark:text-slate-300 max-w-[200px] truncate" title={row.site}>{row.site}</td>}
+                                {drilldownConfig.type === 'site' && <td className="px-4 py-2.5 text-sm font-semibold text-slate-700 dark:text-slate-300">{row.sku}</td>}
+                                <td className="px-4 py-2.5 font-mono text-xs text-slate-600 dark:text-slate-300 max-w-[120px] truncate" title={String(row.site_id ?? '')}>{String(row.site_id ?? '').trim() || '—'}</td>
+                                <td className="px-4 py-2.5 font-mono text-xs text-slate-500">{row.barcode || '—'}</td>
+                                <td className="px-4 py-2.5 text-sm text-slate-600 dark:text-slate-400">{row.size}</td>
+                                <td className="px-4 py-2.5"><span className="px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-600 dark:text-slate-300">{row.season}</span></td>
+                                <td className="px-4 py-2.5 text-sm text-center text-slate-600 dark:text-slate-400">{row.week || '—'}</td>
+                                <td className="px-4 py-2.5 text-xs text-center text-slate-400 italic">{row.week_date_range || '—'}</td>
+                                <td className="px-4 py-2.5 text-sm text-right text-slate-700 dark:text-slate-300 font-semibold">{rowTotalSales(row).toLocaleString()}</td>
+                                <td className="px-4 py-2.5 text-sm text-right text-slate-700 dark:text-slate-300 font-semibold">{(Number(row.sold_qty_prev_35d ?? row.sold_qty_prev_5w) || 0).toLocaleString()}</td>
+                                <td className="px-4 py-2.5 text-sm text-right text-slate-700 dark:text-slate-300 font-semibold">{(row.lag1_sold_qty ?? 0).toLocaleString()}</td>
+                                <td className="px-4 py-2.5 text-center text-xs font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap">{formatReplLastSellingDate(row.last_selling_date)}</td>
+                                <td className="px-4 py-2.5 text-sm text-right text-slate-700 dark:text-slate-300 font-semibold">{formatReplDaysSinceLastSale(row.days_since_last_sale)}</td>
+                                <td className="px-4 py-2.5 max-w-[140px] truncate text-xs text-slate-500" title={sanitizeCellText(row.dead_stock_status)}>{sanitizeCellText(row.dead_stock_status) || '—'}</td>
+                                <td className="px-4 py-2.5 text-sm text-right text-slate-700 dark:text-slate-300 font-semibold">{row.soh?.toLocaleString() ?? 0}</td>
+                                <td className="px-4 py-2.5 text-sm text-right text-slate-700 dark:text-slate-300 font-semibold">{(Number(row.last_week_store_soh) || 0).toLocaleString()}</td>
+                                <td className="px-4 py-2.5 text-sm text-right text-slate-700 dark:text-slate-300 font-semibold">{row.wh_soh?.toLocaleString() ?? 0}</td>
+                                <td className="px-4 py-2.5 text-sm text-right text-indigo-500 font-bold">{row.forecasted?.toLocaleString()}</td>
+                                <td className="px-4 py-2.5 text-sm text-right text-slate-700 dark:text-slate-300 font-semibold">{ddCovS.toLocaleString()}</td>
+                                <td className={`px-4 py-2.5 text-right text-sm font-mono ${WH_FILL_VALUE_CLASS}`}>{ddCovW.toLocaleString()}</td>
+                                <td className="px-4 py-2.5 text-sm text-right text-slate-700 dark:text-slate-300 font-semibold">{(row.total_fulfilled_qty ?? ddCovS + ddCovW).toLocaleString()}</td>
+                                <td className="px-4 py-2.5 text-sm text-right text-slate-700 dark:text-slate-300 font-semibold">{(row.unfilled_qty ?? 0).toLocaleString()}</td>
+                                <td className="px-4 py-2.5 text-sm text-right text-violet-600 dark:text-violet-400">
+                                  {renderPriorityScoreCell(row)}
+                                </td>
+                                <td className="px-4 py-2.5 text-xs text-slate-500 max-w-[160px] truncate font-mono" title={row.refill_source}>{String(row.refill_source || '—')}</td>
+                                <td className="px-4 py-2.5 text-xs text-slate-500 max-w-[200px] truncate" title={row.recommendation_comment}>{row.recommendation_comment}</td>
+                                <td className="px-4 py-2.5 text-xs text-slate-500 max-w-[200px] truncate" title={row.refill_note}>{row.refill_note}</td>
+                              </tr>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Row detail (forecasted / comment click) ── */}
+      {rowDetailModal && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm shadow-2xl">
+          <div className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50/50 p-5 dark:border-slate-800 dark:bg-slate-800/30">
+              <h3 className="flex items-center gap-2 border-l-4 border-indigo-500 pl-3 text-lg font-bold text-slate-900 dark:text-white">
+                <TrendingUp className="h-5 w-5 text-indigo-500" />
+                Row details
+                <span className="font-mono text-sm font-semibold text-indigo-600 dark:text-indigo-400">{rowDetailModal.sku}</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setRowDetailModal(null)}
+                className="rounded-lg bg-slate-100 p-2 text-slate-400 transition-colors hover:bg-slate-200 hover:text-slate-600 dark:bg-slate-800 dark:hover:bg-slate-700 dark:hover:text-white"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="space-y-5 overflow-y-auto p-5 text-sm text-slate-600 dark:text-slate-300">
+              {(() => {
+                const rec = rowDetailModal;
+                const fill = computeFillBreakdown(rec);
+                const hasLakeCovStore =
+                  rec.covered_by_store_soh != null && rec.covered_by_store_soh !== '';
+                const hasLakeCovWh = rec.covered_by_wh_soh != null && rec.covered_by_wh_soh !== '';
+                const covS = hasLakeCovStore ? Number(rec.covered_by_store_soh) : fill.covered_store;
+                const covW = hasLakeCovWh ? Number(rec.covered_by_wh_soh) : fill.covered_wh;
+                const tq = Number(
+                  rec.total_fulfilled_qty != null && rec.total_fulfilled_qty !== ''
+                    ? rec.total_fulfilled_qty
+                    : covS + covW
+                );
+                const uq = Number(rec.unfilled_qty ?? fill.unfilled);
+                const kv = (k: string, v: React.ReactNode) => (
+                  <div className="flex flex-col gap-0.5 rounded-lg border border-slate-100 bg-white/80 px-3 py-2 dark:border-slate-800 dark:bg-slate-900/40">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{k}</span>
+                    <span className="font-semibold text-slate-900 dark:text-slate-100">{v}</span>
+                  </div>
+                );
+                return (
+                  <>
+                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                      {kv('Site', rec.site || '—')}
+                      {kv('Site ID', <span className="font-mono text-xs">{String(rec.site_id ?? '').trim() || '—'}</span>)}
+                      {kv('Barcode', <span className="font-mono text-xs">{rec.barcode || '—'}</span>)}
+                      {kv('Size', rec.size || '—')}
+                      {kv('Season', rec.season || '—')}
+                      {kv('Week no.', rec.week || '—')}
+                      {kv('Week (calendar dates)', rec.week_date_range || '—')}
+                    </div>
+                    <div>
+                      <p className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">Sales & movement</p>
+                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                        {kv('Overall total sales (cumulative)', rowTotalSales(rec).toLocaleString())}
+                        {kv('Sold units — last 35 days', (Number(rec.sold_qty_prev_35d ?? rec.sold_qty_prev_5w) || 0).toLocaleString())}
+                        {kv('Sold units — last week', (rec.lag1_sold_qty ?? 0).toLocaleString())}
+                        {kv('last_selling_date', formatReplLastSellingDate(rec.last_selling_date))}
+                        {kv('days_since_last_sale', formatReplDaysSinceLastSale(rec.days_since_last_sale))}
+                        {kv('dead_stock_status', sanitizeCellText(rec.dead_stock_status) || '—')}
+                      </div>
+                    </div>
+                    <div>
+                      <p className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">On-hand stock</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        {kv('Store_SOH', (rec.soh ?? 0).toLocaleString())}
+                        {kv('WH SOH', (rec.wh_soh ?? 0).toLocaleString())}
+                      </div>
+                    </div>
+                    <div>
+                      <p className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">Refill & fill</p>
+                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                        {kv('Forecasted refill (need)', (rec.forecasted ?? 0).toLocaleString())}
+                        {kv('Covered from store stock', covS.toLocaleString())}
+                        {kv(
+                          'Covered from warehouse stock',
+                          <span className={`text-base ${WH_FILL_VALUE_CLASS}`}>{covW.toLocaleString()}</span>
+                        )}
+                        {kv('total_covered(store+wh_soh)', tq.toLocaleString())}
+                        {kv('SITE_TO_SITE_TRANSFER_REQUIRED(QTY)', uq.toLocaleString())}
+                        {kv('Refill type / source', <span className="break-all font-mono text-xs">{String(rec.refill_source || '—')}</span>)}
+                      </div>
+                    </div>
+                    <div>
+                      <p className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">Priority</p>
+                      <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
+                        The table uses <span className="font-mono">priority_score</span> (scaled 0–10). Optional: open the raw value for how sales + timing fed the model.
+                      </p>
+                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                        {kv('Priority score', formatPriorityScoreValue(rec.priority_score))}
+                        {kv('Raw pre-scale (hover)', renderPriorityScoreRawCell(rec))}
+                        {kv(
+                          'Unit sales in window (input)',
+                          rec.total_sold_qty != null && rec.total_sold_qty !== '' && Number.isFinite(Number(rec.total_sold_qty))
+                            ? Number(rec.total_sold_qty).toLocaleString()
+                            : '—'
+                        )}
+                        {kv(
+                          'Timing bonus',
+                          rec.priority_expl_timing_bonus != null &&
+                            rec.priority_expl_timing_bonus !== '' &&
+                            Number.isFinite(Number(rec.priority_expl_timing_bonus))
+                            ? Number(rec.priority_expl_timing_bonus).toFixed(4)
+                            : '—'
+                        )}
+                      </div>
+                    </div>
+                    <div>
+                      <p className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">Notes</p>
+                      <div className="space-y-2">
+                        <div>
+                          <span className="text-[10px] font-bold uppercase text-slate-400">System recommendation</span>
+                          <p className="mt-1 rounded-lg border border-slate-100 bg-slate-50 p-3 text-slate-800 dark:border-slate-800 dark:bg-slate-800/50 dark:text-slate-200">
+                            {rec.recommendation_comment || '—'}
+                          </p>
+                        </div>
+                        <div>
+                          <span className="text-[10px] font-bold uppercase text-slate-400">Refill / planner note</span>
+                          <p className="mt-1 rounded-lg border border-slate-100 bg-slate-50 p-3 text-slate-800 dark:border-slate-800 dark:bg-slate-800/50 dark:text-slate-200">
+                            {rec.refill_note || '—'}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {transferSuggestModal && (
+        <div className="fixed inset-0 z-[65] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm shadow-2xl">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col border border-slate-200 dark:border-slate-800">
+            <div className="p-5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50/50 dark:bg-slate-800/30">
+              <h3 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2 border-l-4 border-amber-500 pl-3">
+                <Truck className="w-5 h-5 text-amber-500" />
+                Suggest site → site transfer
+              </h3>
+              <button
+                type="button"
+                onClick={() => setTransferSuggestModal(null)}
+                className="p-2 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-white bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-5 space-y-4 text-sm text-slate-600 dark:text-slate-300">
+              {(() => {
+                const rec = transferSuggestModal.rec;
+                const tr = transferSuggestModal.transfer;
+                const fill = computeFillBreakdown(rec);
+                const uq = Number(rec.unfilled_qty ?? fill.unfilled);
+                const covS =
+                  rec.covered_by_store_soh != null && rec.covered_by_store_soh !== ''
+                    ? Number(rec.covered_by_store_soh)
+                    : fill.covered_store;
+                const covW =
+                  rec.covered_by_wh_soh != null && rec.covered_by_wh_soh !== ''
+                    ? Number(rec.covered_by_wh_soh)
+                    : fill.covered_wh;
+                const tq = Number(
+                  rec.total_fulfilled_qty != null && rec.total_fulfilled_qty !== ''
+                    ? rec.total_fulfilled_qty
+                    : covS + covW
+                );
+                return (
+                  <>
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div>
+                        <span className="font-bold uppercase text-slate-400">Receiving store / site</span>
+                        <p className="font-semibold text-slate-900 dark:text-white mt-0.5">{rec.site}</p>
+                      </div>
+                      <div>
+                        <span className="font-bold uppercase text-slate-400">SKU</span>
+                        <p className="font-mono font-semibold text-indigo-600 dark:text-indigo-400 mt-0.5">{rec.sku}</p>
+                      </div>
+                    </div>
+                    <p className="text-xs">
+                      Refill type / source: <strong className="font-mono">{String(rec.refill_source || '—').trim() || '—'}</strong>
+                    </p>
+                    <p className="text-xs">
+                      Forecasted refill (need): <strong>{Number(rec.forecasted ?? 0).toLocaleString()}</strong>
+                      {' · '}
+                      Covered from store stock: <strong>{covS.toLocaleString()}</strong>
+                      {' · '}
+                      Covered from warehouse stock:{' '}
+                      <strong className={WH_FILL_VALUE_CLASS}>{covW.toLocaleString()}</strong>
+                    </p>
+                    <p className="text-xs">
+                      total_covered(store+wh_soh): <strong className="text-emerald-600 dark:text-emerald-400">{tq.toLocaleString()}</strong>
+                      {' · '}
+                      SITE_TO_SITE_TRANSFER_REQUIRED(QTY): <strong className="text-amber-600 dark:text-amber-400">{uq.toLocaleString()}</strong>
+                    </p>
+                    <p className="text-xs">
+                      Overall total sales (cumulative): <strong>{rowTotalSales(rec).toLocaleString()}</strong>
+                      {' · '}
+                      Sold — last 35 days: <strong>{Number(rec.sold_qty_prev_35d ?? rec.sold_qty_prev_5w ?? 0).toLocaleString()}</strong>
+                      {' · '}
+                      Sold — last week: <strong>{Number(rec.lag1_sold_qty ?? 0).toLocaleString()}</strong>
+                    </p>
+                    {tr ? (
+                      <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-3 space-y-2 text-xs bg-slate-50/80 dark:bg-slate-800/40">
+                        <div className="font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wide">Matched transfer line</div>
+                        <p>
+                          <span className="text-slate-500">Donor store</span>{' '}
+                          <strong className="text-slate-900 dark:text-white">{String(tr.donor_site || tr.donor_store_name || tr.donor_store || '—')}</strong>
+                        </p>
+                        <p>
+                          <span className="text-slate-500">Transfer qty</span>{' '}
+                          <strong>{(Number(tr.total_units ?? tr.required_size_units ?? 0) || 0).toLocaleString()}</strong>
+                          {tr.priority ? (
+                            <>
+                              {' · '}
+                              <span className="text-slate-500">Priority</span> <strong>{tr.priority}</strong>
+                            </>
+                          ) : null}
+                        </p>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-amber-800 dark:text-amber-200/90 bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">
+                        No matching transfer recommendation for this line. Sync from Transfers or plan manually.
+                      </p>
+                    )}
+                  </>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+    </DashboardLayout>
+  );
+}
