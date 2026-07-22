@@ -1,0 +1,6 @@
+import{c as i}from"./DashboardLayout-Dq3dj6G4.js";import{j as e}from"./index-CWeEARE8.js";/**
+ * @license lucide-react v0.563.0 - ISC
+ *
+ * This source code is licensed under the ISC license.
+ * See the LICENSE file in the root directory of this source tree.
+ */const a=[["path",{d:"M12 15V3",key:"m9g1x1"}],["path",{d:"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4",key:"ih7n3h"}],["path",{d:"m7 10 5 5 5-5",key:"brsn70"}]],d=i("download",a);function p({size:t=80,label:n,variant:r="emerald"}){const s=r==="rose"?{"--replen-line-stroke":"#ef4444","--replen-line-stroke-muted":"rgb(239 68 68 / 0.22)"}:void 0;return e.jsxs("div",{className:"replen-line-root flex flex-col items-center justify-center gap-3",role:"status","aria-live":"polite","aria-busy":"true",children:[e.jsx("div",{className:"replen-line-loading",style:{width:t,height:t,...s},children:e.jsxs("svg",{viewBox:"0 0 100 100",xmlns:"http://www.w3.org/2000/svg","aria-hidden":!0,children:[e.jsx("polyline",{id:"back",pathLength:"192",points:"22,22 78,22 78,78 22,78 22,22"}),e.jsx("polyline",{id:"front",pathLength:"192",points:"22,22 78,22 78,78 22,78 22,22"})]})}),n?e.jsx("p",{className:"max-w-sm text-center text-[11px] font-bold uppercase leading-relaxed tracking-wide text-emerald-900/85 dark:text-emerald-100/90",children:n}):null]})}export{d as D,p as R};
