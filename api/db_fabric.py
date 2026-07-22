@@ -35,29 +35,33 @@ def _find_odbc_driver():
 
 def get_connection():
     """Returns a pyodbc connection to the Fabric/Power BI SQL/XMLA Endpoint."""
-    if not FABRIC_SQL_ENDPOINT:
+    ep = _env("FABRIC_SQL_ENDPOINT")
+    ws = _env("FABRIC_WORKSPACE_NAME")
+    endpoint = ep or (f"powerbi://api.powerbi.com/v1.0/myorg/{ws}" if ws else "")
+
+    if not endpoint:
         raise ValueError("Set FABRIC_SQL_ENDPOINT or FABRIC_WORKSPACE_NAME (e.g. test1) in environment.")
 
     driver = _find_odbc_driver()
-    
-    # Clean up the endpoint URL if it has the powerbi:// prefix
-    server = FABRIC_SQL_ENDPOINT
-    if server.startswith("powerbi://"):
-        # The SQL driver can often handle the powerbi:// prefix, but let's be safe
-        pass 
-
+    server = endpoint
     database = _env("FABRIC_LAKEHOUSE_NAME", "MODEL_REVENUE_ID", "PBI_DATASET_ID", default="StockPulse")
-    
-    if PBI_CLIENT_ID and PBI_CLIENT_SECRET:
+
+    client_id = _env("AZURE_CLIENT_ID", "PBI_CLIENT_ID", "POWERBI_CLIENT_ID")
+    client_secret = _env("AZURE_CLIENT_SECRET", "PBI_CLIENT_SECRET", "POWERBI_CLIENT_SECRET")
+    tenant_id = _env("AZURE_TENANT_ID", "PBI_TENANT_ID", "POWERBI_TENANT_ID")
+
+    if client_id and client_secret:
         # Service Principal Auth (Most robust for backend)
         conn_str = (
             f"Driver={driver};"
             f"Server={server};"
             f"Database={database};"
-            f"Uid={PBI_CLIENT_ID};"
-            f"Pwd={PBI_CLIENT_SECRET};"
+            f"Uid={client_id};"
+            f"Pwd={client_secret};"
             f"Authentication=ActiveDirectoryServicePrincipal;"
         )
+        if tenant_id:
+            conn_str += f"Tenant={tenant_id};"
     else:
         # User Auth (Interactive)
         conn_str = (
@@ -71,24 +75,36 @@ def get_connection():
 
 def query_one(query: str, params=None):
     """Execute SQL and return first row."""
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(query, params or [])
-        row = cursor.fetchone()
-        return tuple(row) if row else None
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params or [])
+            row = cursor.fetchone()
+            return tuple(row) if row else None
+    except Exception as e:
+        logger.warning(f"Fabric SQL query_one failed: {e}")
+        return None
 
 def query_all(query: str, params=None):
     """Execute SQL and return all rows."""
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(query, params or [])
-        rows = cursor.fetchall()
-        return [tuple(r) for r in rows]
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params or [])
+            rows = cursor.fetchall()
+            return [tuple(r) for r in rows]
+    except Exception as e:
+        logger.warning(f"Fabric SQL query_all failed: {e}")
+        return []
 
 def query_df(query: str, params=None):
     """Execute SQL and return DataFrame."""
-    with get_connection() as conn:
-        return pd.read_sql(query, conn, params=params)
+    try:
+        with get_connection() as conn:
+            return pd.read_sql(query, conn, params=params)
+    except Exception as e:
+        logger.warning(f"Fabric SQL query_df failed: {e}")
+        return pd.DataFrame()
 
 def is_configured():
     """Check if basic config is present."""

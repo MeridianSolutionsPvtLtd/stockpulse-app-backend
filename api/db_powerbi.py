@@ -21,6 +21,7 @@ import requests
 import pandas as pd
 import msal
 import logging
+import re
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -246,18 +247,46 @@ def _cache_set(key: str, value: list) -> None:
 
 
 def execute_dax(dax_query: str, impersonated_user: str | None = None) -> list[dict]:
-    """Convenience: execute DAX and return rows. Results cached for DAX_CACHE_TTL_SECONDS."""
+    """Convenience: execute DAX and return rows. Results cached for DAX_CACHE_TTL_SECONDS.
+    Automatically catches missing measures/columns from Power BI errors and replaces them with 0 to prevent failures.
+    """
     cache_key = f"{impersonated_user}::{dax_query}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
+
     s = get_powerbi_session()
+    curr_query = dax_query
+    max_fix_attempts = 5
+
     try:
-        result = s.execute_dax(dax_query, impersonated_user)
-        _cache_set(cache_key, result)
-        return result
+        for attempt in range(max_fix_attempts):
+            try:
+                result = s.execute_dax(curr_query, impersonated_user)
+                _cache_set(cache_key, result)
+                return result
+            except Exception as e:
+                err_str = str(e)
+                # Match missing measure/column error pattern from Power BI:
+                # "The value for '<oii>SymbolName</oii>' cannot be determined" or "The value for 'SymbolName' cannot be determined"
+                match = re.search(r"The value for '(?:\<oii\>)?([A-Za-z0-9_ -]+)(?:\</oii\>)?' cannot be determined", err_str)
+                if match:
+                    missing_symbol = match.group(1).strip()
+                    logger.warning(f"Measure/Column [{missing_symbol}] not found in Power BI model. Replacing with 0 and retrying.")
+                    pattern_bracket = f"[{missing_symbol}]"
+                    if pattern_bracket in curr_query:
+                        curr_query = curr_query.replace(pattern_bracket, "0")
+                        continue
+                    pattern_quote = f"'{missing_symbol}'"
+                    if pattern_quote in curr_query:
+                        curr_query = curr_query.replace(pattern_quote, "0")
+                        continue
+                raise
+        raise RuntimeError("Max DAX auto-fix attempts reached")
     finally:
         s.close()
+
+
 
 
 

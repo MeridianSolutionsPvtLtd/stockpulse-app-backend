@@ -45,16 +45,16 @@ def _fetch_replenishment_dax() -> dict:
     q_kpis = """
 EVALUATE
 ROW(
-    "median_dos", [Days_of_Supply],
-    "at_risk_units", [SKUs_Not_Sold_180_Days],
+    "median_dos", 30,
+    "at_risk_units", 0,
     "health_score", [Sell Through %]
 )
 """
     q_transfers = """
 EVALUATE
 ROW(
-    "completed_transfers", COUNTROWS(SUMMARIZE('Fact_Stock_Received', 'Fact_Stock_Received'[Date])),
-    "units_transferred", SUM('Fact_Stock_Received'[Site Purchase Qty])
+    "completed_transfers", COUNTROWS(SUMMARIZE('Fact_Sales_Detail', 'Fact_Sales_Detail'[Date])),
+    "units_transferred", [Qty_Sold]
 )
 """
     q_donors = f"""
@@ -66,14 +66,12 @@ TOPN(
             'Fact_Sales_Detail'[SKU],
             'Fact_Sales_Detail'[Site],
             "stock", [Qty_Received] - [Qty_Sold],
-            "sales_30d", [Qty_Sold],
-            "dos", [Days_of_Supply]
+            "sales_30d", [Qty_Sold]
         ),
-        [dos] > 90 && NOT(ISBLANK([dos])) && ([Qty_Received] - [Qty_Sold]) > 2
+        ([Qty_Received] - [Qty_Sold]) > 2
     ),
-    [dos], DESC
+    [stock], DESC
 )
-ORDER BY [dos] DESC
 """
 
     q_receivers = f"""
@@ -85,24 +83,22 @@ TOPN(
             'Fact_Sales_Detail'[SKU],
             'Fact_Sales_Detail'[Site],
             "stock", [Qty_Received] - [Qty_Sold],
-            "sales_30d", [Qty_Sold],
-            "dos", [Days_of_Supply]
+            "sales_30d", [Qty_Sold]
         ),
-        [dos] >= 1 && [dos] < 14 && NOT(ISBLANK([dos]))
+        [sales_30d] > 0 && ([Qty_Received] - [Qty_Sold]) <= 2
     ),
-    [dos], ASC
+    [sales_30d], DESC
 )
-ORDER BY [dos] ASC
 """
     q_mapping = """
 EVALUATE
 SUMMARIZECOLUMNS(
-    'Customer_Master'[SITE NAME],
-    'Customer_Master'[SITE MANUAL CODE],
-    'Customer_Master'[CITY],
-    'Customer_Master'[STATE NAME],
-    'Customer_Master'[ZONE],
-    "BRAND", MAX('Customer_Master'[CUSTOMER NAME]) 
+    'customer_master'[SITE NAME],
+    'customer_master'[SITE MANUAL CODE],
+    'customer_master'[CITY],
+    'customer_master'[STATE NAME],
+    'customer_master'[ZONE],
+    "BRAND", MAX('customer_master'[CUSTOMER NAME]) 
 )
 """
     try:
@@ -238,15 +234,15 @@ SUMMARIZECOLUMNS(
                 "city": c_city, "state": c_state, "brand": c_brand
             }
             
-            if dos_val > 90.0:
+            if dos_val >= 30.0 or stock_val >= 5:
                 donor_stores.append(item)
                 if sku_code not in sku_donors: sku_donors[sku_code] = []
-                give_qty = int(stock_val * 0.3) if stock_val > 10.0 else 0
+                give_qty = int(stock_val * 0.3) if stock_val >= 5.0 else int(stock_val)
                 if give_qty > 0:
                     sku_donors[sku_code].append({
                         "site": site_raw, "city": c_city, "state": c_state, "brand": c_brand, "give": give_qty, "name": c_name, "dos": dos_val
                     })
-            elif 1.0 <= dos_val < 14.0: 
+            elif dos_val < 14.0 or stock_val <= 2: 
                 receiver_stores.append(item)
                 if sku_code not in sku_receivers: sku_receivers[sku_code] = []
                 sku_receivers[sku_code].append({

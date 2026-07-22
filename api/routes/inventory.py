@@ -68,6 +68,8 @@ SUMMARIZECOLUMNS(
             stock_units = max(float(rn.get("current_stock") or 0), 0)
             stock_value = revenue * 0.6 
             dos = float(rn.get("days_of_supply") or rn.get("DAYS_OF_SUPPLY") or 0)
+            if (dos <= 0 or dos >= 9999) and sold > 0:
+                dos = round(stock_units * d / sold, 1)
             
             health = "Healthy"
             if sold == 0: health = "No Sales"
